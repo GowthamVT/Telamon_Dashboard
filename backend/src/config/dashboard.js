@@ -16,7 +16,11 @@ const path = require('node:path');
 const config = require('./env');
 const logger = require('../util/logger');
 
-const DESCRIPTOR_PATH = path.join(config.paths.backendRoot, 'dashboard.config.json');
+// Overridable so tests can point at a fixture, and so one deployment could later
+// serve several dashboards from different descriptors.
+const DESCRIPTOR_PATH = process.env.DASHBOARD_CONFIG_PATH
+  ? path.resolve(config.paths.backendRoot, process.env.DASHBOARD_CONFIG_PATH)
+  : path.join(config.paths.backendRoot, 'dashboard.config.json');
 
 const VALID_AGGS = new Set(['SUM', 'COUNT', 'COUNT_DISTINCT', 'AVG', 'MIN', 'MAX']);
 // Snowflake unquoted identifier rules; we quote anyway, but reject anything

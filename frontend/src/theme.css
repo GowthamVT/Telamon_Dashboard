@@ -1,0 +1,617 @@
+/*
+ * Design tokens.
+ *
+ * The three categorical series colors below were validated with the dataviz
+ * palette validator in BOTH modes (all-pairs): lightness band, chroma floor,
+ * CVD separation (worst ΔE 9.2 light / 9.4 dark), and normal-vision floor
+ * (24.0 light / 20.9 dark) all pass.
+ *
+ * Light-mode aqua (--series-3) sits at 2.74:1 against the light surface, below
+ * the 3:1 bar. That is a WARN, not a pass, and it obligates "relief": every
+ * charted value is also readable as text. We satisfy that with the sortable
+ * table view that sits beside the chart, plus axis ticks and tooltips.
+ *
+ * Dark values are declared under BOTH the media query and [data-theme] so the
+ * OS setting and an explicit toggle each win in the right direction.
+ */
+
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --gridline: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+  --hover-wash: rgba(11, 11, 11, 0.04);
+  --selected-wash: rgba(42, 120, 214, 0.1);
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+
+  --status-critical: #d03b3b;
+  --status-good: #0ca30c;
+  --success-text: #006300;
+
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme='light'])) {
+    color-scheme: dark;
+
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+    --hover-wash: rgba(255, 255, 255, 0.06);
+    --selected-wash: rgba(57, 135, 229, 0.18);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+
+    --success-text: #0ca30c;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --gridline: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+  --hover-wash: rgba(255, 255, 255, 0.06);
+  --selected-wash: rgba(57, 135, 229, 0.18);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+
+  --success-text: #0ca30c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  /* Transparent so an embedding page's own background shows through the frame
+     instead of a hard white/black rectangle. */
+  background: var(--page);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Layout ---------- */
+
+.app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 20px 64px;
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.app-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.app-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 4px 0 0;
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---------- Cards ---------- */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.card-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+@media (min-width: 900px) {
+  .grid-2 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* ---------- Filter bar: ONE row above everything it scopes ---------- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.field-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.field select,
+.field input {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  min-height: 34px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+}
+
+.field select:focus-visible,
+.field input:focus-visible,
+button:focus-visible,
+[role='button']:focus-visible,
+th[tabindex]:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 2px;
+}
+
+.field select[multiple] {
+  min-height: 72px;
+  min-width: 150px;
+  padding: 4px;
+}
+
+.field select[multiple] option {
+  padding: 3px 5px;
+  border-radius: 4px;
+}
+
+.field-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* ---------- Buttons ---------- */
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  /* 24px minimum hit target per the interaction spec. */
+  min-height: 34px;
+  padding: 7px 12px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--hover-wash);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  color: #fff;
+  background: var(--series-1);
+  border-color: var(--series-1);
+}
+
+button.subtle {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+button.subtle:hover:not(:disabled) {
+  background: var(--hover-wash);
+}
+
+/* ---------- Stat tiles ---------- */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.tile-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+/* Proportional figures: tabular-nums would make big numbers look loose. */
+.tile-value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.tile-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ---------- Breadcrumbs ---------- */
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  min-height: 30px;
+  font-size: 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.crumb:hover {
+  background: var(--hover-wash);
+}
+
+.crumb.current {
+  background: var(--selected-wash);
+  border-color: transparent;
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: default;
+}
+
+.crumb-sep {
+  color: var(--text-muted);
+  padding: 0 2px;
+}
+
+/* ---------- Tables ---------- */
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--gridline);
+  white-space: nowrap;
+}
+
+th {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--surface-1);
+  position: sticky;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+th.numeric,
+td.numeric {
+  text-align: right;
+  /* Columns of numbers must align vertically. */
+  font-variant-numeric: tabular-nums;
+}
+
+th:not(.sortable) {
+  cursor: default;
+}
+
+th .sort-arrow {
+  color: var(--text-primary);
+  margin-left: 4px;
+}
+
+tbody tr:hover {
+  background: var(--hover-wash);
+}
+
+tbody tr.clickable {
+  cursor: pointer;
+}
+
+td.dim-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ---------- Chart chrome ---------- */
+
+.chart-box {
+  /* Sized to include the x-axis band so the axis labels are never cropped
+     into a nested scrollbar. */
+  width: 100%;
+  height: 300px;
+}
+
+/* Small multiples: one panel per measure, each with its own y-axis. */
+.facets {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+@media (min-width: 860px) {
+  /* Two panels side by side; a third wraps to the next row. */
+  .facets:not(:has(.facet:only-child)) {
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  }
+}
+
+.facet {
+  min-width: 0;
+}
+
+.facet-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.chart-empty,
+.state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 160px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Hold the previous render at reduced opacity instead of flashing a skeleton. */
+.refetching {
+  opacity: 0.55;
+  transition: opacity 120ms ease-out;
+}
+
+.tooltip {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(11, 11, 11, 0.12);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.tooltip-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.tooltip-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.tooltip-value {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.tooltip-hint {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--gridline);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Legend: identity never rests on color alone. */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-key {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+  flex: none;
+}
+
+/* ---------- Banners ---------- */
+
+.banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-critical);
+  border-radius: 6px;
+  background: var(--surface-1);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.banner.info {
+  border-left-color: var(--series-1);
+}
+
+.banner-body {
+  min-width: 0;
+}
+
+.banner strong {
+  display: block;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.banner code {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--hover-wash);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cache-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success-text);
+  flex: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

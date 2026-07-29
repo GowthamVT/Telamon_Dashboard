@@ -37,3 +37,5 @@ logs/
 coverage/
 .cache/
 tmp/
+backend/dashboard.config.json
+
