@@ -12,7 +12,8 @@
     "dev": "node --watch src/server.js",
     "keygen": "node scripts/generate-keypair.js",
     "verify": "node scripts/verify-connection.js",
-    "introspect": "node scripts/introspect-schema.js"
+    "introspect": "node scripts/introspect-schema.js",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "compression": "^1.8.1",
