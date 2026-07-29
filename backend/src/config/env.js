@@ -65,6 +65,11 @@ const snowflake = {
   schema: required('SNOWFLAKE_SCHEMA'),
   privateKeyPath: optional('SNOWFLAKE_PRIVATE_KEY_PATH', 'keys/snowflake_key.p8'),
   privateKeyPassphrase: optional('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', undefined),
+  // Fallback auth. Key-pair is preferred and used whenever this is unset; set it
+  // only when you cannot register a public key (that needs USERADMIN, which the
+  // PUBLIC role lacks). Read from .env, which is gitignored -- never hardcode it,
+  // and never paste it into a chat/ticket.
+  password: optional('SNOWFLAKE_PASSWORD', undefined),
   pool: {
     min: int('SNOWFLAKE_POOL_MIN', 1),
     max: int('SNOWFLAKE_POOL_MAX', 6),

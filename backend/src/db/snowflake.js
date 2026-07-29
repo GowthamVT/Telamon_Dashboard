@@ -8,6 +8,7 @@
  *
  * Authentication is key-pair (JWT). No password is ever read or stored.
  */
+const fs = require('node:fs');
 const snowflakeSdk = require('snowflake-sdk');
 const config = require('../config/env');
 const logger = require('../util/logger');
@@ -26,23 +27,54 @@ const primed = new WeakSet();
 
 let stats = { acquired: 0, executed: 0, failed: 0 };
 
+/**
+ * Which auth mode is in effect.
+ *
+ * Key-pair (JWT) is the intended mode and the default. Password auth is an
+ * explicit override for when the public key cannot be registered on the user
+ * (that needs USERADMIN/ACCOUNTADMIN, which the PUBLIC role lacks).
+ *
+ * Setting SNOWFLAKE_PASSWORD wins over the key on disk: a key file is always
+ * present once `npm run keygen` has run, so deferring to it would make the
+ * password setting silently do nothing. Unset SNOWFLAKE_PASSWORD to go back to
+ * key-pair.
+ */
+function authMode() {
+  const sf = config.snowflake;
+  if (sf.password) return 'password';
+  if (fs.existsSync(sf.resolvedKeyPath)) return 'keypair';
+  // Neither available: stay on keypair so readPrivateKey() raises the actionable
+  // "run npm run keygen" error rather than a vague auth failure.
+  return 'keypair';
+}
+
 function buildConnectionOptions() {
   const sf = config.snowflake;
-  return {
+  const common = {
     account: sf.account,
     username: sf.username,
     role: sf.role,
     warehouse: sf.warehouse,
     database: sf.database,
     schema: sf.schema,
-    authenticator: 'SNOWFLAKE_JWT',
-    privateKey: config.readPrivateKey(),
-    ...(sf.privateKeyPassphrase
-      ? { privateKeyPass: sf.privateKeyPassphrase }
-      : {}),
     // Keep result rows as JS objects keyed by column name.
     rowMode: 'object',
     clientSessionKeepAlive: true,
+  };
+
+  if (authMode() === 'password') {
+    logger.warn(
+      'Using PASSWORD authentication (SNOWFLAKE_PASSWORD is set and no key is in use). ' +
+        'Key-pair auth is preferred -- register the public key and remove SNOWFLAKE_PASSWORD from .env.'
+    );
+    return { ...common, password: sf.password };
+  }
+
+  return {
+    ...common,
+    authenticator: 'SNOWFLAKE_JWT',
+    privateKey: config.readPrivateKey(),
+    ...(sf.privateKeyPassphrase ? { privateKeyPass: sf.privateKeyPassphrase } : {}),
   };
 }
 
@@ -182,4 +214,4 @@ async function close() {
   }
 }
 
-module.exports = { query, ping, poolStats, close };
+module.exports = { query, ping, poolStats, close, authMode };

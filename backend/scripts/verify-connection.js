@@ -51,8 +51,11 @@ async function main() {
   console.log(`  warehouse : ${config.snowflake.warehouse}`);
   console.log(`  database  : ${config.snowflake.database}`);
   console.log(`  schema    : ${config.snowflake.schema}`);
-  console.log(`  auth      : key-pair (SNOWFLAKE_JWT)`);
-  console.log(`  key file  : ${config.snowflake.resolvedKeyPath}`);
+  const mode = sf.authMode();
+  console.log(
+    `  auth      : ${mode === 'password' ? 'PASSWORD (fallback -- key-pair preferred)' : 'key-pair (SNOWFLAKE_JWT)'}`
+  );
+  if (mode === 'keypair') console.log(`  key file  : ${config.snowflake.resolvedKeyPath}`);
   console.log('='.repeat(72));
 
   // 1. Authenticate and confirm session context.
