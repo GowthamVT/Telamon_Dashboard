@@ -12,6 +12,7 @@ const security = require('./middleware/security');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const analyticsRoutes = require('./routes/analytics');
 const systemRoutes = require('./routes/system');
+const monitorRoutes = require('./routes/monitors');
 
 function createApp() {
   const app = express();
@@ -38,6 +39,7 @@ function createApp() {
   );
 
   app.use('/api', systemRoutes);
+  app.use('/api', monitorRoutes);
   app.use('/api', analyticsRoutes);
 
   app.get('/', (req, res) => {

@@ -38,7 +38,7 @@ const SORT_OPTIONS = ['Site name', 'Overall', 'Start date'];
  * `data` is injectable so this renders identically from mock data or from the
  * API. Everything below the header is derived in lib/routeModel.js.
  */
-export default function RouteCompletionMonitor({ data = loadRouteMonitor() }) {
+export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live = null }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('All');
   const [sort, setSort] = useState('Site name');
@@ -49,12 +49,24 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor() }) {
     [summary.sites, query, status, sort]
   );
 
+  // Live values win where they exist; sample data fills the rest.
+  const routeName = live?.route?.name || data.route.name;
+  const kpi = live?.statusCounts || null;
+  const complete = kpi ? kpi.complete : summary.complete;
+  const inProgress = kpi ? kpi.inProgress : summary.inProgress;
+  const yetToStart = kpi ? kpi.yetToStart : summary.yetToStart;
+  const kpiTotal = kpi ? kpi.total : summary.total;
+
+  const subtitle = live?.route
+    ? `${live.route.nodeCount} sites · ${live.route.companyName}`
+    : `${summary.total} sites`;
+
   return (
     <div className="mon-shell">
       <MonitorHeader
         eyebrow="ROUTE COMPLETION MONITOR"
-        title={data.route.name}
-        subtitle={`${summary.total} sites`}
+        title={routeName}
+        subtitle={subtitle}
       />
 
       {/* Hero: route-average completion + status breakdown */}
@@ -68,19 +80,25 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor() }) {
           <div className="mon-hero-right">
             <CountBreakdown
               counts={[
-                { label: 'Complete', value: summary.complete, color: statusColor(STATUS.COMPLETE) },
-                { label: 'In Progress', value: summary.inProgress, color: statusColor(STATUS.IN_PROGRESS) },
-                { label: 'Yet to Start', value: summary.yetToStart, color: statusColor(STATUS.YET_TO_START) },
+                { label: 'Complete', value: complete, color: statusColor(STATUS.COMPLETE) },
+                { label: 'In Progress', value: inProgress, color: statusColor(STATUS.IN_PROGRESS) },
+                { label: 'Yet to Start', value: yetToStart, color: statusColor(STATUS.YET_TO_START) },
               ]}
             />
             <SegmentedBar
-              total={summary.total}
+              total={kpiTotal}
               segments={[
-                { label: 'Complete', value: summary.complete, color: STATUS_COLORS[STATUS.COMPLETE].fg },
-                { label: 'In Progress', value: summary.inProgress, color: STATUS_COLORS[STATUS.IN_PROGRESS].fg },
-                { label: 'Yet to Start', value: summary.yetToStart, color: STATUS_COLORS[STATUS.YET_TO_START].fg },
+                { label: 'Complete', value: complete, color: STATUS_COLORS[STATUS.COMPLETE].fg },
+                { label: 'In Progress', value: inProgress, color: STATUS_COLORS[STATUS.IN_PROGRESS].fg },
+                { label: 'Yet to Start', value: yetToStart, color: STATUS_COLORS[STATUS.YET_TO_START].fg },
               ]}
             />
+            {kpi ? (
+              <p className="mon-cell-sub" style={{ marginTop: 10 }}>
+                Live · {kpiTotal} sites by latest status
+                {kpi.complete === 0 ? ' · no "Complete" status exists in the source data' : ''}
+              </p>
+            ) : null}
           </div>
         </div>
       </div>

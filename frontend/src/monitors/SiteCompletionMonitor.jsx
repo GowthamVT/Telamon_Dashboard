@@ -62,7 +62,7 @@ function DocumentRow({ item }) {
  * backend endpoint (POST /api/site/:id/document) plus auth -- not browser
  * storage, which would silently diverge per viewer and vanish when embedded.
  */
-export default function SiteCompletionMonitor({ data = loadSiteMonitor() }) {
+export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live = null }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('All');
   const [milestone, setMilestone] = useState('All milestones');
@@ -81,6 +81,12 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor() }) {
   const overallStatus = siteStatus(summary);
   const photoPct = percent(data.photos.uploaded, data.photos.total);
 
+  // Live values win where they exist; sample data fills the rest.
+  const siteName = live?.site?.name || data.site.name;
+  const routeName = live?.site?.route || data.site.route;
+  const startDate = live?.site?.start || data.site.start;
+  const kpi = live?.statusCounts || null;
+
   const milestoneOptions = [
     'All milestones',
     ...summary.progress.map((m) => ({ value: m.label, label: `${m.label} — ${m.name}` })),
@@ -90,14 +96,39 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor() }) {
     <div className="mon-shell">
       <MonitorHeader
         eyebrow="SITE COMPLETION MONITOR"
-        title={data.site.name.toUpperCase()}
-        subtitle={`Started ${data.site.start}`}
+        title={siteName.toUpperCase()}
+        subtitle={
+          live?.site
+            ? `Started ${startDate} · ${live.site.companyName} · node status ${live.site.nodeStatus}`
+            : `Started ${startDate}`
+        }
       />
 
       <div className="mon-card">
         <p className="mon-card-label">ROUTE</p>
-        <p className="mon-route-value">{data.site.route}</p>
+        <p className="mon-route-value">{routeName}</p>
       </div>
+
+      {/* Live status KPI. Separate from the milestone card below, which is still
+          sample data -- so a real figure never sits unlabelled beside a mock one. */}
+      {kpi ? (
+        <div className="mon-card">
+          <p className="mon-card-label mon-card-label--lg">
+            SITE STATUS — LIVE FROM CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS
+          </p>
+          <CountBreakdown
+            counts={[
+              { label: 'Complete', value: kpi.complete, color: statusColor(STATUS.COMPLETE) },
+              { label: 'In Progress', value: kpi.inProgress, color: statusColor(STATUS.IN_PROGRESS) },
+              { label: 'Yet to Start', value: kpi.yetToStart, color: statusColor(STATUS.YET_TO_START) },
+            ]}
+          />
+          <p className="mon-cell-sub">
+            {kpi.total} site{kpi.total === 1 ? '' : 's'} in scope, counted by latest status
+            {kpi.complete === 0 ? ' · no "Complete" status exists in the source data' : ''}
+          </p>
+        </div>
+      ) : null}
 
       {/* Milestone progress: hero figure + per-milestone bars */}
       <div className="mon-card">
