@@ -116,7 +116,9 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
 
       <StatCards
         items={[
-          { label: 'TOTAL SITES', value: summary.total, color: '#F7F8FB' },
+          // Live: the number of nodes in the current Company > Site > Node scope,
+          // so it tracks the selection (198 all Telamon -> 16 one route -> 1 node).
+          { label: 'TOTAL SITES', value: kpiTotal, color: '#F7F8FB' },
           { label: 'PHOTOS UPLOADED %', value: `${summary.avgPhotoPct}%`, color: pctColor(summary.avgPhotoPct) },
           { label: 'DAILY REPORTS SUBMITTED', value: summary.totalReports, color: '#F7F8FB' },
           {
