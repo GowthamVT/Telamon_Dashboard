@@ -42,6 +42,7 @@ async function get(path, params = {}, signal) {
 }
 
 export const monitorApi = {
+  hierarchy: (scope, signal) => get('/api/monitor/hierarchy', scope, signal),
   routes: (scope, signal) => get('/api/monitor/routes', scope, signal),
   nodes: (scope, signal) => get('/api/monitor/nodes', scope, signal),
   statusCounts: (scope, signal) => get('/api/monitor/status-counts', scope, signal),

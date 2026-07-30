@@ -114,7 +114,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       {kpi ? (
         <div className="mon-card">
           <p className="mon-card-label mon-card-label--lg">
-            SITE STATUS — LIVE FROM CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS
+            SITE STATUS — {String(kpi.scopeLabel || 'company').toUpperCase()}, ALL {kpi.total} SITES
           </p>
           <CountBreakdown
             counts={[
@@ -124,7 +124,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             ]}
           />
           <p className="mon-cell-sub">
-            {kpi.total} site{kpi.total === 1 ? '' : 's'} in scope, counted by latest status
+            Company-level · counted by latest status · unaffected by the site/node selection
             {kpi.complete === 0 ? ' · no "Complete" status exists in the source data' : ''}
           </p>
         </div>

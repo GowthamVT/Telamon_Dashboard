@@ -65,6 +65,28 @@ function buildScope({ companyPattern = DEFAULT_COMPANY_PATTERN, companyId, siteI
 }
 
 /**
+ * Reduce any scope to its COMPANY level only.
+ *
+ * The hierarchy is Company > Site > Node. The status KPI card is a
+ * company-level figure by design: it answers "how do all of Telamon's sites
+ * stand?", so drilling into one site must NOT shrink it. Previously the card
+ * inherited siteId and collapsed to a single row (0/1/0) while the header still
+ * named one route -- two different scopes on one screen, which reads wrong.
+ *
+ * Dropping siteId/nodeId here keeps the card stable while the rest of the page
+ * drills. Note this is a *widening* of scope, so it must never be applied to
+ * a per-user RLS predicate: companyId/companyPattern are preserved precisely
+ * because those are the tenant boundary.
+ */
+function companyScopeOf(scope = {}) {
+  const { companyId, companyPattern } = scope;
+  return {
+    ...(companyId ? { companyId } : {}),
+    ...(companyPattern ? { companyPattern } : {}),
+  };
+}
+
+/**
  * Status vocabulary translation.
  *
  * The dashboards speak Complete / In Progress / Yet to Start. The warehouse's
@@ -96,20 +118,24 @@ function classifyStatus(raw) {
 }
 
 /**
- * KPI card counts: sites per status.
+ * KPI card counts: sites per status, always at COMPANY level.
  *
  * Uses the LATEST row per siteId, because the table is a status *history* -- a
  * plain COUNT would count every past transition and inflate every bucket.
  */
-async function getStatusCounts(scope = {}) {
+async function getStatusCounts(rawScope = {}) {
+  // Company-level by design -- see companyScopeOf().
+  const scope = companyScopeOf(rawScope);
+
   return cache.wrap('monitor-status-counts', scope, async () => {
     const where = buildScope(scope, { withNode: false });
 
     const sql = `
       WITH latest AS (
         SELECT "siteId",
-               "Site Name"  AS site_name,
-               "Status"      AS status,
+               "Site Name"     AS site_name,
+               "Company Name"  AS company_name,
+               "Status"         AS status,
                ROW_NUMBER() OVER (
                  PARTITION BY "siteId"
                  ORDER BY COALESCE("Updated Date", "DATE") DESC NULLS LAST
@@ -117,7 +143,11 @@ async function getStatusCounts(scope = {}) {
           FROM ${SITE_HISTORY}
           ${where.sql}
       )
-      SELECT status, COUNT(*) AS sites
+      SELECT status,
+             COUNT(*) AS sites,
+             -- Company names in scope, so the UI can label the card with a name
+             -- rather than echoing back an opaque companyId.
+             ARRAY_AGG(DISTINCT company_name) AS companies
         FROM latest
        WHERE rn = 1
        GROUP BY status
@@ -127,20 +157,123 @@ async function getStatusCounts(scope = {}) {
 
     const counts = { complete: 0, inProgress: 0, yetToStart: 0 };
     const unmapped = [];
+    const companyNames = new Set();
 
     for (const row of rows) {
       const bucket = classifyStatus(row.STATUS);
       const n = Number(row.SITES) || 0;
       if (bucket) counts[bucket] += n;
       else unmapped.push({ status: row.STATUS, sites: n });
+
+      // Snowflake returns ARRAY_AGG as a JSON string.
+      try {
+        const names = typeof row.COMPANIES === 'string' ? JSON.parse(row.COMPANIES) : row.COMPANIES;
+        for (const name of names || []) if (name) companyNames.add(name);
+      } catch {
+        /* label is cosmetic -- never fail the KPI over it */
+      }
     }
+
+    const names = [...companyNames].sort();
+    /**
+     * Human label for the card. One company -> its name; several -> the shared
+     * prefix ("Telamon") when they agree, else a count. Never the raw id.
+     */
+    const label =
+      names.length === 1
+        ? names[0]
+        : names.length > 1
+          ? names.every((n) => n.startsWith(names[0].split(' ')[0]))
+            ? names[0].split(' ')[0]
+            : `${names.length} companies`
+          : (scope.companyPattern || DEFAULT_COMPANY_PATTERN).replace(/%/g, '');
 
     return {
       ...counts,
       total: counts.complete + counts.inProgress + counts.yetToStart,
+      // Declared explicitly so the UI can label WHAT the numbers cover, rather
+      // than leaving the reader to assume they match the page's heading.
+      scopeLevel: 'company',
+      scopeLabel: label,
+      companies: names,
       // Raw values kept so the mapping above can be checked against reality.
       raw: rows.map((r) => ({ status: r.STATUS, sites: Number(r.SITES) || 0 })),
       unmapped,
+      elapsedMs,
+    };
+  });
+}
+
+/**
+ * The Company > Site > Node hierarchy, built from the id keys.
+ *
+ * One query, nested in JS rather than three round trips: CLOUD_NODE already
+ * carries all three levels on every row, so the join is free.
+ *
+ * "Telamon" is a company *group* -- it resolves to four distinct companyIds
+ * (OSP / Outdoor / DAS / Wireline), so the top level is a list, not one entry.
+ */
+async function getHierarchy(scope = {}) {
+  return cache.wrap('monitor-hierarchy', scope, async () => {
+    const where = buildScope(scope);
+    const sql = `
+      SELECT "companyId"    AS company_id,
+             "Company Name" AS company_name,
+             "siteId"       AS site_id,
+             "Site Name"    AS site_name,
+             "nodeId"       AS node_id,
+             "Node Name"    AS node_name,
+             "Site Status"  AS site_status,
+             TO_VARCHAR("Node Start Date",'YYYY-MM-DD') AS start_date
+        FROM ${NODE}
+        ${where.sql}
+       ORDER BY "Company Name", "Site Name", "Node Name"`;
+
+    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-hierarchy' });
+
+    const companies = new Map();
+    for (const r of rows) {
+      if (!companies.has(r.COMPANY_ID)) {
+        companies.set(r.COMPANY_ID, {
+          companyId: r.COMPANY_ID,
+          companyName: r.COMPANY_NAME,
+          sites: new Map(),
+        });
+      }
+      const company = companies.get(r.COMPANY_ID);
+
+      if (!company.sites.has(r.SITE_ID)) {
+        company.sites.set(r.SITE_ID, {
+          siteId: r.SITE_ID,
+          siteName: r.SITE_NAME,
+          siteStatus: r.SITE_STATUS,
+          nodes: [],
+        });
+      }
+      company.sites.get(r.SITE_ID).nodes.push({
+        nodeId: r.NODE_ID,
+        nodeName: r.NODE_NAME,
+        startDate: r.START_DATE,
+      });
+    }
+
+    const tree = [...companies.values()].map((c) => {
+      const sites = [...c.sites.values()];
+      return {
+        ...c,
+        sites,
+        siteCount: sites.length,
+        nodeCount: sites.reduce((sum, s) => sum + s.nodes.length, 0),
+      };
+    });
+
+    return {
+      companies: tree,
+      totals: {
+        companies: tree.length,
+        sites: tree.reduce((sum, c) => sum + c.siteCount, 0),
+        nodes: tree.reduce((sum, c) => sum + c.nodeCount, 0),
+      },
       elapsedMs,
     };
   });
@@ -262,8 +395,10 @@ async function getSiteMonitor(scope = {}) {
 module.exports = {
   DEFAULT_COMPANY_PATTERN,
   buildScope,
+  companyScopeOf,
   classifyStatus,
   getStatusCounts,
+  getHierarchy,
   listRoutes,
   listNodes,
   getRouteMonitor,

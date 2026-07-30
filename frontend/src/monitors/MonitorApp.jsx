@@ -2,31 +2,29 @@ import { useState } from 'react';
 import './monitor.css';
 import RouteCompletionMonitor from './RouteCompletionMonitor';
 import SiteCompletionMonitor from './SiteCompletionMonitor';
+import { ScopePicker } from './components/ScopePicker';
+import { useHierarchy } from './hooks/useHierarchy';
 import { useLiveMonitor } from './hooks/useLiveMonitor';
 
 /**
  * Shell for the two completion monitors.
  *
- * View state is in memory only -- no history.pushState, because an iframe shares
- * the top-level back/forward stack and pushing an entry per tab click would
- * hijack the parent page's back button.
+ * View and scope state are in memory only -- no history.pushState, because an
+ * iframe shares the top-level back/forward stack and pushing an entry per
+ * selection would hijack the parent page's back button. URLs are read on load
+ * for deep-linking, never written back.
  */
 const VIEWS = [
   { id: 'site', label: 'SITE MONITOR', Component: SiteCompletionMonitor, kind: 'site' },
   { id: 'route', label: 'ROUTE MONITOR', Component: RouteCompletionMonitor, kind: 'route' },
 ];
 
-/**
- * Resolve the starting view from ?view=site|route so each dashboard has its own
- * openable URL. Read once on mount; never written back (see note above).
- */
 function initialViewFromUrl(fallback) {
   if (typeof window === 'undefined') return fallback;
   const requested = new URLSearchParams(window.location.search).get('view');
   return VIEWS.some((v) => v.id === requested) ? requested : fallback;
 }
 
-/** Scope params can be deep-linked too: ?siteId=... / ?nodeId=... / ?companyId=... */
 function scopeFromUrl() {
   if (typeof window === 'undefined') return {};
   const params = new URLSearchParams(window.location.search);
@@ -40,11 +38,12 @@ function scopeFromUrl() {
 
 export default function MonitorApp({ initialView = 'site' }) {
   const [view, setView] = useState(() => initialViewFromUrl(initialView));
-  const [scope] = useState(scopeFromUrl);
+  const [scope, setScope] = useState(scopeFromUrl);
 
   const active = VIEWS.find((v) => v.id === view) || VIEWS[0];
   const Active = active.Component;
 
+  const hierarchy = useHierarchy();
   const { data: live, error, loading } = useLiveMonitor(active.kind, scope);
 
   return (
@@ -62,6 +61,14 @@ export default function MonitorApp({ initialView = 'site' }) {
           </button>
         ))}
       </nav>
+
+      <ScopePicker
+        tree={hierarchy.tree}
+        scope={scope}
+        onChange={setScope}
+        loading={hierarchy.loading}
+        error={hierarchy.error}
+      />
 
       {/* Never let a live figure and a placeholder look equally trustworthy. */}
       {error ? (
@@ -82,10 +89,11 @@ export default function MonitorApp({ initialView = 'site' }) {
         <div className="mon-notice" style={{ borderLeftColor: '#34E0A1' }}>
           <div>
             <strong>Partially live</strong>
-            <span style={{ color: '#34E0A1' }}>LIVE from Snowflake:</span> header names (
-            <code>Node Name</code> / <code>Site Name</code>), start date, company, and the status KPI
-            card. <span style={{ color: '#F5B133' }}>Still sample data:</span> photos, daily reports,
-            milestones and the document checklist — those need the source tables identified.
+            <span style={{ color: '#34E0A1' }}>LIVE:</span> header names, start date, company, the
+            Company&nbsp;›&nbsp;Site&nbsp;›&nbsp;Node hierarchy, and the status KPI (company-level —
+            it does not shrink as you drill).{' '}
+            <span style={{ color: '#F5B133' }}>Sample data:</span> photos, daily reports, milestones
+            and the document checklist — still need source tables.
           </div>
         </div>
       )}

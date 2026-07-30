@@ -860,6 +860,63 @@
   border-color: var(--mon-pill-border);
 }
 
+/* ---------------- Scope picker (Company > Site > Node) ---------------- */
+
+.mon-scopebar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  max-width: 1300px;
+  margin: 16px auto 0;
+  padding: 14px 16px;
+  background: var(--mon-card);
+  border: 1px solid var(--mon-border);
+  border-radius: 12px;
+}
+
+@media (min-width: 640px) {
+  .mon-scopebar {
+    margin-left: 40px;
+    margin-right: 40px;
+  }
+}
+
+.mon-scope-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mon-scope-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--mon-dim);
+}
+
+.mon-scope-field .mon-select {
+  max-width: 320px;
+}
+
+.mon-scope-field .mon-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mon-scope-sep {
+  color: var(--mon-dim);
+  font-size: 15px;
+  padding-bottom: 10px;
+}
+
+.mon-scope-note {
+  margin-left: auto;
+  padding-bottom: 10px;
+  font-size: 11px;
+  color: var(--mon-dim);
+}
+
 /* Notice banner for data-source status */
 
 .mon-notice {

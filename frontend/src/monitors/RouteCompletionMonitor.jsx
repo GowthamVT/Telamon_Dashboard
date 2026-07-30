@@ -69,8 +69,16 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
         subtitle={subtitle}
       />
 
-      {/* Hero: route-average completion + status breakdown */}
+      {/* Hero: route-average completion + status breakdown.
+          The two halves are at DIFFERENT scopes on purpose -- the figure on the
+          left is this route, the counts on the right are the whole company -- so
+          the right-hand side is labelled explicitly rather than left to inference. */}
       <div className="mon-card">
+        {kpi ? (
+          <p className="mon-card-label">
+            SITE STATUS — {String(kpi.scopeLabel || 'company').toUpperCase()}, ALL {kpiTotal} SITES
+          </p>
+        ) : null}
         <div className="mon-hero">
           <HeroFigure
             pct={summary.avgPhotoPct}
@@ -95,7 +103,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
             />
             {kpi ? (
               <p className="mon-cell-sub" style={{ marginTop: 10 }}>
-                Live · {kpiTotal} sites by latest status
+                Company-level · {kpiTotal} sites by latest status · unaffected by the site/node
+                selection
                 {kpi.complete === 0 ? ' · no "Complete" status exists in the source data' : ''}
               </p>
             ) : null}
