@@ -15,7 +15,7 @@ import {
   StatCards,
   StatusPill,
 } from './components/primitives';
-import { filterSites, summarise } from './lib/routeModel';
+import { filterSites, rowsFromNodes, summarise } from './lib/routeModel';
 import {
   DANGER,
   describeStatusScope,
@@ -45,9 +45,18 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
   const [sort, setSort] = useState('Site name');
 
   const summary = useMemo(() => summarise(data.sites), [data.sites]);
+
+  // Live CLOUD_NODE rows when available, sample rows otherwise. Live rows carry
+  // real name/date/status; their unsourced metrics stay NULL and render as "--".
+  const isLive = Array.isArray(live?.nodes) && live.nodes.length > 0;
+  const rows = useMemo(
+    () => (isLive ? rowsFromNodes(live.nodes) : summary.sites),
+    [isLive, live, summary.sites]
+  );
+
   const visible = useMemo(
-    () => filterSites(summary.sites, { query, status, sort }),
-    [summary.sites, query, status, sort]
+    () => filterSites(rows, { query, status, sort }),
+    [rows, query, status, sort]
   );
 
   // Live values win where they exist; sample data fills the rest.
@@ -155,11 +164,13 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           </div>
 
           {visible.map((site) => (
-            <div className="mon-grid mon-trow" key={site.name} role="row">
+            <div className="mon-grid mon-trow" key={site.nodeId || site.name} role="row">
               <div>
                 <p className="mon-cell-title">{site.name}</p>
                 <p className="mon-cell-sub">
-                  {site.start} · {site.duration}
+                  {site.start}
+                  {site.duration ? ` · ${site.duration}` : ''}
+                  {site.rawStatus ? ` · ${site.rawStatus}` : ''}
                 </p>
               </div>
               <ProgressCell
@@ -186,7 +197,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
       </div>
 
       <p className="mon-foot">
-        {visible.length} of {summary.total} sites shown
+        {/* Denominator is the rows actually in scope, not the sample count. */}
+        {visible.length} of {rows.length} sites shown
       </p>
     </div>
   );

@@ -189,7 +189,17 @@ export function Select({ value, onChange, options, label }) {
 
 /* ---------------- Table cells ---------------- */
 
+/** Shown where a metric has no identified source yet -- never a fabricated 0. */
+export function NoDataCell({ hint }) {
+  return (
+    <span className="mon-nodata" title={hint || 'No source table identified yet'}>
+      --
+    </span>
+  );
+}
+
 export function ProgressCell({ done, total, pct, color }) {
+  if (pct === null || pct === undefined) return <NoDataCell hint="Photo counts: source not yet identified" />;
   return (
     <div className="mon-progress">
       <div className="mon-progress-nums">
@@ -209,6 +219,8 @@ export function ProgressCell({ done, total, pct, color }) {
 }
 
 export function ReportsCell({ count, missedDays }) {
+  if (count === null || count === undefined)
+    return <NoDataCell hint="Daily reports: source not yet identified" />;
   return (
     <div className="mon-reports">
       <span className="mon-reports-value">{count}</span>
@@ -221,6 +233,7 @@ export function ReportsCell({ count, missedDays }) {
 
 /** Four milestone blocks + an "n/4 milestones" summary. */
 export function MilestoneCell({ milestones, colorFor }) {
+  if (!milestones) return <NoDataCell hint="Milestones: source not yet identified" />;
   const done = milestones.filter((m) => m === 100).length;
   return (
     <div className="mon-miles">
@@ -245,6 +258,7 @@ export function MilestoneCell({ milestones, colorFor }) {
 }
 
 export function OverallCell({ pct, color }) {
+  if (pct === null || pct === undefined) return <NoDataCell hint="Derived from photo counts" />;
   return (
     <div className="mon-overall">
       <SparkBars pct={pct} color={color} heights={[6, 10, 14, 9]} small />

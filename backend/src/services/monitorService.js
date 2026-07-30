@@ -139,60 +139,40 @@ function classifyStatus(raw) {
 /**
  * KPI card counts: NODES per status, following the current selection.
  *
- * Node grain (not site grain) for two reasons:
- *   - CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS has no nodeId, so a site scope
- *     collapsed to a single row and the card could never split a route's nodes.
- *   - the site-level Status column only ever holds In-progress/Inactive for
- *     Telamon, so "Complete" was unreachable. The node-level view carries
- *     COP SENT / COP APPROVED / YET TO START as well.
+ * Source is CLOUD_NODE."Node Status" -- deliberately NOT the status-history
+ * views, for three reasons:
+ *   - Coverage is complete: all 198 Telamon nodes carry a Node Status, whereas
+ *     only 95 have a history row. The history route needed a LEFT JOIN and a
+ *     synthetic "no history" bucket for the other 103, which then dominated the
+ *     chart.
+ *   - It agrees with the table. The rows show each node's "Node Status", so
+ *     counting anything else lets the KPI contradict the list beneath it -- on
+ *     LUMEN_ILA_SALT_LAKE_CITY_SACRAMENTO the history view called all 16 nodes
+ *     "yet to start" while every row read IN PROGRESS.
+ *   - No window function needed: this is current state, not a transition log.
  *
- * Counts the LATEST row per nodeId: this is a status *history*, so a plain COUNT
- * would tally every past transition and inflate every bucket.
- *
- * Driven from CLOUD_NODE via LEFT JOIN so that nodes with NO history row are
- * still counted (as "yet to start") rather than silently vanishing -- only 95 of
- * Telamon's 198 nodes have history, so an inner join would drop over half of
- * them and the total would not match the node count shown elsewhere.
+ * ("Node Status" is the work state -- IN PROGRESS / YET TO START / COP SENT /
+ * COP APPROVED / INACTIVE. Do not confuse it with "Node Current Status", which
+ * is the record's lifecycle flag and reads 'Active' for every Telamon node.)
  */
 async function getStatusCounts(scope = {}) {
   return cache.wrap('monitor-status-counts', scope, async () => {
-    // Node scope applies to CLOUD_NODE; the history side is filtered by the join.
-    const nodeWhere = buildScope(scope, { withNode: true });
-    const histWhere = buildScope(scope, { withNode: true });
+    const where = buildScope(scope, { withNode: true });
 
     const sql = `
-      WITH scoped_nodes AS (
-        SELECT "nodeId"        AS node_id,
-               "Company Name"  AS company_name
-          FROM ${NODE}
-          ${nodeWhere.sql}
-      ),
-      latest AS (
-        SELECT "nodeId" AS node_id,
-               "Status" AS status,
-               ROW_NUMBER() OVER (
-                 PARTITION BY "nodeId"
-                 ORDER BY COALESCE("Updated Date", "DATE") DESC NULLS LAST
-               ) AS rn
-          FROM ${NODE_HISTORY}
-          ${histWhere.sql}
-      )
-      SELECT COALESCE(l.status, '${NO_HISTORY}') AS status,
+      SELECT COALESCE("Node Status", '${NO_HISTORY}') AS status,
              COUNT(*) AS sites,
              -- Company names in scope, so the UI can label the card with a name
              -- rather than echoing back an opaque companyId.
-             ARRAY_AGG(DISTINCT n.company_name) AS companies
-        FROM scoped_nodes n
-        LEFT JOIN (SELECT node_id, status FROM latest WHERE rn = 1) l
-               ON l.node_id = n.node_id
+             ARRAY_AGG(DISTINCT "Company Name") AS companies
+        FROM ${NODE}
+        ${where.sql}
        GROUP BY 1
        ORDER BY sites DESC`;
 
-    const { rows, elapsedMs } = await sf.query(
-      sql,
-      [...nodeWhere.binds, ...histWhere.binds],
-      { label: 'monitor-status-counts' }
-    );
+    const { rows, elapsedMs } = await sf.query(sql, where.binds, {
+      label: 'monitor-status-counts',
+    });
 
     const counts = { complete: 0, inProgress: 0, yetToStart: 0 };
     const unmapped = [];
@@ -358,9 +338,15 @@ async function listNodes(scope = {}) {
              "siteId"                        AS site_id,
              "companyId"                     AS company_id,
              "Node Name"                     AS node_name,
+             "Node Code"                     AS node_code,
              "Site Name"                     AS route_name,
              "Company Name"                  AS company_name,
-             "Node Current Status"           AS node_status,
+             -- Work state (IN PROGRESS / YET TO START / COP SENT / COP APPROVED
+             -- / INACTIVE) -- this is what the table's STATUS column shows.
+             "Node Status"                   AS work_status,
+             -- Record lifecycle flag; 'Active' for every Telamon node, so it is
+             -- carried for completeness but is not the status users care about.
+             "Node Current Status"           AS record_status,
              "Site Status"                   AS site_status,
              TO_VARCHAR("Node Start Date", 'YYYY-MM-DD') AS start_date
         FROM ${NODE}
@@ -374,9 +360,11 @@ async function listNodes(scope = {}) {
         siteId: r.SITE_ID,
         companyId: r.COMPANY_ID,
         nodeName: r.NODE_NAME,
+        nodeCode: r.NODE_CODE,
         routeName: r.ROUTE_NAME,
         companyName: r.COMPANY_NAME,
-        nodeStatus: r.NODE_STATUS,
+        workStatus: r.WORK_STATUS,
+        recordStatus: r.RECORD_STATUS,
         siteStatus: r.SITE_STATUS,
         startDate: r.START_DATE,
       })),
@@ -396,11 +384,16 @@ async function getRouteMonitor(scope = {}) {
     ? routes.routes.find((r) => r.siteId === scope.siteId)
     : routes.routes[0];
 
+  // Table rows: the nodes in scope. Fetched here rather than by a second client
+  // call so the header, KPI and rows are always the same slice of data.
+  const nodes = await listNodes(scope);
+
   return {
     route: selected
       ? { siteId: selected.siteId, name: selected.routeName, companyName: selected.companyName, nodeCount: selected.nodeCount }
       : null,
     routes: routes.routes,
+    nodes: nodes.nodes,
     statusCounts,
   };
 }
@@ -425,7 +418,8 @@ async function getSiteMonitor(scope = {}) {
           route: selected.routeName,
           companyName: selected.companyName,
           start: selected.startDate,
-          nodeStatus: selected.nodeStatus,
+          workStatus: selected.workStatus,
+          recordStatus: selected.recordStatus,
         }
       : null,
     nodeCount: nodes.nodes.length,

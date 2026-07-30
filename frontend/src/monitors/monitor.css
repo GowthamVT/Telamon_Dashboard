@@ -959,3 +959,11 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* Metric with no identified source yet -- deliberately visible as absent. */
+.mon-nodata {
+  font-size: 13px;
+  color: var(--mon-dim);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}

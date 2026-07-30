@@ -75,10 +75,66 @@ export function summarise(sites) {
   };
 }
 
+/**
+ * Map CLOUD_NODE."Node Status" onto the dashboard's three buckets.
+ *
+ * COP = Certificate of Provisioning. "Sent" is submitted but not yet signed off,
+ * so it is still in flight; approval is the finish line -- CLOUD_NODE carries
+ * matching "COP Approved Date"/"COP Completed Date" columns, which is the
+ * evidence for reading approval as complete.
+ */
+const NODE_STATUS_MAP = {
+  'cop approved': STATUS.COMPLETE,
+  'cop completed': STATUS.COMPLETE,
+  complete: STATUS.COMPLETE,
+  completed: STATUS.COMPLETE,
+  'in progress': STATUS.IN_PROGRESS,
+  'in-progress': STATUS.IN_PROGRESS,
+  'cop sent': STATUS.IN_PROGRESS,
+  'cop rejected': STATUS.IN_PROGRESS,
+  'yet to start': STATUS.YET_TO_START,
+  inactive: STATUS.YET_TO_START,
+};
+
+export function mapNodeStatus(raw) {
+  if (!raw) return STATUS.YET_TO_START;
+  return NODE_STATUS_MAP[String(raw).trim().toLowerCase()] || STATUS.IN_PROGRESS;
+}
+
+/**
+ * Build table rows from live CLOUD_NODE records.
+ *
+ * Name, start date and status are real. The photo / report / milestone metrics
+ * are left NULL rather than filled with sample numbers: now that each row names
+ * a real node, inventing its photo count would attribute fake figures to a real
+ * site, which is worse than showing nothing. The cells render as "--" until
+ * those sources are identified.
+ */
+export function rowsFromNodes(nodes = []) {
+  return nodes.map((node) => ({
+    nodeId: node.nodeId,
+    name: node.nodeName,
+    start: node.startDate || '--',
+    duration: node.nodeCode || '',
+    rawStatus: node.workStatus || null,
+    status: mapNodeStatus(node.workStatus),
+    routeName: node.routeName,
+    companyName: node.companyName,
+    // Unsourced metrics -- explicitly absent, not zero.
+    photosUploaded: null,
+    photosTotal: null,
+    photosPct: null,
+    reports: null,
+    missedDays: null,
+    milestones: null,
+  }));
+}
+
 export const SORTS = {
+  // `?? -1` keeps NULL metrics from sorting as 0 and appearing "best".
   'Site name': (a, b) => a.name.localeCompare(b.name),
-  Overall: (a, b) => b.photosPct - a.photosPct,
-  'Start date': (a, b) => a.start.localeCompare(b.start),
+  Overall: (a, b) => (b.photosPct ?? -1) - (a.photosPct ?? -1),
+  'Start date': (a, b) => String(a.start).localeCompare(String(b.start)),
 };
 
 export function filterSites(sites, { query, status, sort }) {
