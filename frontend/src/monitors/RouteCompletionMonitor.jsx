@@ -18,6 +18,7 @@ import {
 import { filterSites, summarise } from './lib/routeModel';
 import {
   DANGER,
+  describeStatusScope,
   milestoneColor,
   pctColor,
   STATUS,
@@ -58,8 +59,10 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
   const kpiTotal = kpi ? kpi.total : summary.total;
 
   const subtitle = live?.route
-    ? `${live.route.nodeCount} sites · ${live.route.companyName}`
+    ? `${live.route.nodeCount} nodes · ${live.route.companyName}`
     : `${summary.total} sites`;
+
+  const scopeNote = describeStatusScope(kpi);
 
   return (
     <div className="mon-shell">
@@ -69,14 +72,12 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
         subtitle={subtitle}
       />
 
-      {/* Hero: route-average completion + status breakdown.
-          The two halves are at DIFFERENT scopes on purpose -- the figure on the
-          left is this route, the counts on the right are the whole company -- so
-          the right-hand side is labelled explicitly rather than left to inference. */}
+      {/* Hero: route-average completion + node status breakdown. */}
       <div className="mon-card">
-        {kpi ? (
+        {scopeNote ? (
           <p className="mon-card-label">
-            SITE STATUS — {String(kpi.scopeLabel || 'company').toUpperCase()}, ALL {kpiTotal} SITES
+            NODE STATUS — {String(scopeNote.label || 'company').toUpperCase()} · {scopeNote.total}{' '}
+            NODES ({scopeNote.level})
           </p>
         ) : null}
         <div className="mon-hero">
@@ -101,11 +102,12 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 { label: 'Yet to Start', value: yetToStart, color: STATUS_COLORS[STATUS.YET_TO_START].fg },
               ]}
             />
-            {kpi ? (
+            {scopeNote ? (
               <p className="mon-cell-sub" style={{ marginTop: 10 }}>
-                Company-level · {kpiTotal} sites by latest status · unaffected by the site/node
-                selection
-                {kpi.complete === 0 ? ' · no "Complete" status exists in the source data' : ''}
+                Latest status per node, {scopeNote.level}
+                {scopeNote.noHistory > 0
+                  ? ` · ${scopeNote.noHistory} of ${scopeNote.total} nodes have no status history and are counted as Yet to Start`
+                  : ''}
               </p>
             ) : null}
           </div>

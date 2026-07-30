@@ -11,6 +11,7 @@ import {
 import { filterItems, ITEM_STATUS, siteStatus, summarise } from './lib/siteModel';
 import {
   DANGER,
+  describeStatusScope,
   pctColor,
   progressColor,
   STATUS,
@@ -86,6 +87,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const routeName = live?.site?.route || data.site.route;
   const startDate = live?.site?.start || data.site.start;
   const kpi = live?.statusCounts || null;
+  const scopeNote = describeStatusScope(kpi);
 
   const milestoneOptions = [
     'All milestones',
@@ -114,7 +116,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       {kpi ? (
         <div className="mon-card">
           <p className="mon-card-label mon-card-label--lg">
-            SITE STATUS — {String(kpi.scopeLabel || 'company').toUpperCase()}, ALL {kpi.total} SITES
+            NODE STATUS — {String(scopeNote.label || 'company').toUpperCase()} · {scopeNote.total}{' '}
+            NODES ({scopeNote.level})
           </p>
           <CountBreakdown
             counts={[
@@ -124,8 +127,10 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             ]}
           />
           <p className="mon-cell-sub">
-            Company-level · counted by latest status · unaffected by the site/node selection
-            {kpi.complete === 0 ? ' · no "Complete" status exists in the source data' : ''}
+            Latest status per node, {scopeNote.level}
+            {scopeNote.noHistory > 0
+              ? ` · ${scopeNote.noHistory} of ${scopeNote.total} nodes have no status history and are counted as Yet to Start`
+              : ''}
           </p>
         </div>
       ) : null}

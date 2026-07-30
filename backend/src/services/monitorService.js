@@ -18,6 +18,7 @@ const cache = require('../cache/queryCache');
 
 const NODE = '"ECSITE"."ANALYTICS"."CLOUD_NODE"';
 const SITE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS"';
+const NODE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_NODE_STATUS_HISTORY_WITH_COUNTS"';
 
 /** Default tenant scope until RLS is wired. */
 const DEFAULT_COMPANY_PATTERN = '%Telamon%';
@@ -86,6 +87,9 @@ function companyScopeOf(scope = {}) {
   };
 }
 
+/** Bucket for nodes that exist in CLOUD_NODE but have no status-history row. */
+const NO_HISTORY = '(no status history)';
+
 /**
  * Status vocabulary translation.
  *
@@ -103,10 +107,25 @@ function companyScopeOf(scope = {}) {
  * the totals.
  */
 const STATUS_MAP = {
+  // Work under way.
   'in-progress': 'inProgress',
   'in progress': 'inProgress',
   inprogress: 'inProgress',
+  // COP = Certificate of Provisioning. "Sent" means submitted but not yet
+  // signed off, so it is still in flight; "approved"/"completed" is the finish
+  // line -- CLOUD_NODE carries matching "COP Approved Date"/"COP Completed Date"
+  // columns, which is the evidence for treating approval as complete.
+  'cop sent': 'inProgress',
+  'cop rejected': 'inProgress',
+  'cop approved': 'complete',
+  'cop completed': 'complete',
+  // Not started.
+  'yet to start': 'yetToStart',
+  yettostart: 'yetToStart',
   inactive: 'yetToStart',
+  // A node with no status history has never been worked.
+  [NO_HISTORY]: 'yetToStart',
+  // Generic spellings, kept so a renamed status still lands somewhere sensible.
   complete: 'complete',
   completed: 'complete',
   closed: 'complete',
@@ -118,42 +137,62 @@ function classifyStatus(raw) {
 }
 
 /**
- * KPI card counts: sites per status, always at COMPANY level.
+ * KPI card counts: NODES per status, following the current selection.
  *
- * Uses the LATEST row per siteId, because the table is a status *history* -- a
- * plain COUNT would count every past transition and inflate every bucket.
+ * Node grain (not site grain) for two reasons:
+ *   - CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS has no nodeId, so a site scope
+ *     collapsed to a single row and the card could never split a route's nodes.
+ *   - the site-level Status column only ever holds In-progress/Inactive for
+ *     Telamon, so "Complete" was unreachable. The node-level view carries
+ *     COP SENT / COP APPROVED / YET TO START as well.
+ *
+ * Counts the LATEST row per nodeId: this is a status *history*, so a plain COUNT
+ * would tally every past transition and inflate every bucket.
+ *
+ * Driven from CLOUD_NODE via LEFT JOIN so that nodes with NO history row are
+ * still counted (as "yet to start") rather than silently vanishing -- only 95 of
+ * Telamon's 198 nodes have history, so an inner join would drop over half of
+ * them and the total would not match the node count shown elsewhere.
  */
-async function getStatusCounts(rawScope = {}) {
-  // Company-level by design -- see companyScopeOf().
-  const scope = companyScopeOf(rawScope);
-
+async function getStatusCounts(scope = {}) {
   return cache.wrap('monitor-status-counts', scope, async () => {
-    const where = buildScope(scope, { withNode: false });
+    // Node scope applies to CLOUD_NODE; the history side is filtered by the join.
+    const nodeWhere = buildScope(scope, { withNode: true });
+    const histWhere = buildScope(scope, { withNode: true });
 
     const sql = `
-      WITH latest AS (
-        SELECT "siteId",
-               "Site Name"     AS site_name,
-               "Company Name"  AS company_name,
-               "Status"         AS status,
+      WITH scoped_nodes AS (
+        SELECT "nodeId"        AS node_id,
+               "Company Name"  AS company_name
+          FROM ${NODE}
+          ${nodeWhere.sql}
+      ),
+      latest AS (
+        SELECT "nodeId" AS node_id,
+               "Status" AS status,
                ROW_NUMBER() OVER (
-                 PARTITION BY "siteId"
+                 PARTITION BY "nodeId"
                  ORDER BY COALESCE("Updated Date", "DATE") DESC NULLS LAST
                ) AS rn
-          FROM ${SITE_HISTORY}
-          ${where.sql}
+          FROM ${NODE_HISTORY}
+          ${histWhere.sql}
       )
-      SELECT status,
+      SELECT COALESCE(l.status, '${NO_HISTORY}') AS status,
              COUNT(*) AS sites,
              -- Company names in scope, so the UI can label the card with a name
              -- rather than echoing back an opaque companyId.
-             ARRAY_AGG(DISTINCT company_name) AS companies
-        FROM latest
-       WHERE rn = 1
-       GROUP BY status
+             ARRAY_AGG(DISTINCT n.company_name) AS companies
+        FROM scoped_nodes n
+        LEFT JOIN (SELECT node_id, status FROM latest WHERE rn = 1) l
+               ON l.node_id = n.node_id
+       GROUP BY 1
        ORDER BY sites DESC`;
 
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-status-counts' });
+    const { rows, elapsedMs } = await sf.query(
+      sql,
+      [...nodeWhere.binds, ...histWhere.binds],
+      { label: 'monitor-status-counts' }
+    );
 
     const counts = { complete: 0, inProgress: 0, yetToStart: 0 };
     const unmapped = [];
@@ -193,7 +232,9 @@ async function getStatusCounts(rawScope = {}) {
       total: counts.complete + counts.inProgress + counts.yetToStart,
       // Declared explicitly so the UI can label WHAT the numbers cover, rather
       // than leaving the reader to assume they match the page's heading.
-      scopeLevel: 'company',
+      // Counts follow the selection, so the UI can say what it is showing.
+      scopeLevel: scope.nodeId ? 'node' : scope.siteId ? 'site' : 'company',
+      grain: 'node',
       scopeLabel: label,
       companies: names,
       // Raw values kept so the mapping above can be checked against reality.

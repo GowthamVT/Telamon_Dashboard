@@ -62,6 +62,26 @@ export function litBars(pct, count) {
 }
 
 /**
+ * Human summary of a live status-KPI payload.
+ *
+ * Surfaces the no-history bucket explicitly: for Telamon over half the nodes
+ * have no status-history row and are counted as "Yet to Start". That is a
+ * defensible reading (never worked) but it dominates the chart, so it must be
+ * stated rather than buried.
+ */
+export function describeStatusScope(kpi) {
+  if (!kpi) return null;
+  const level = kpi.scopeLevel === 'node' ? 'this node' : kpi.scopeLevel === 'site' ? 'this site' : 'company-wide';
+  const noHistory = (kpi.raw || []).find((r) => /no status history/i.test(r.status));
+  return {
+    level,
+    label: kpi.scopeLabel,
+    total: kpi.total,
+    noHistory: noHistory ? noHistory.sites : 0,
+  };
+}
+
+/**
  * Local timestamp for the header. Rendered client-side so it reflects the
  * viewer's timezone rather than the warehouse's.
  */
