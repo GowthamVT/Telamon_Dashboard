@@ -38,6 +38,7 @@ const handle = (fn) => (req, res, next) =>
     })
     .catch(next);
 
+router.get('/monitor/node-metrics', handle((req) => monitors.getNodeMetrics(scopeFrom(req))));
 router.get('/monitor/hierarchy', handle((req) => monitors.getHierarchy(scopeFrom(req))));
 router.get('/monitor/routes', handle((req) => monitors.listRoutes(scopeFrom(req))));
 router.get('/monitor/nodes', handle((req) => monitors.listNodes(scopeFrom(req))));

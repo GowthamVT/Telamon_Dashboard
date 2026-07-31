@@ -16,6 +16,7 @@
 const fs = require('node:fs');
 const sf = require('../src/db/snowflake');
 const config = require('../src/config/env');
+const { assertReadOnly } = require('../src/db/readOnly');
 
 const argv = process.argv.slice(2);
 const flag = (name) => {
@@ -62,8 +63,10 @@ function printTable(rows, limit) {
 }
 
 async function main() {
-  const sqlText = readSql().trim().replace(/;\s*$/, '');
-  if (!sqlText) throw new Error('Empty SQL.');
+  // Read-only guardrail: refuses anything that is not a single read statement,
+  // so a write cannot reach the live warehouse from this tool -- see
+  // src/db/readOnly.js for why it is a whitelist rather than a blacklist.
+  const sqlText = assertReadOnly(readSql());
 
   console.log(
     `Session: ${config.snowflake.account} | role ${config.snowflake.role} | ` +

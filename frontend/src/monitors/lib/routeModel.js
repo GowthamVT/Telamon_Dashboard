@@ -111,23 +111,35 @@ export function mapNodeStatus(raw) {
  * those sources are identified.
  */
 export function rowsFromNodes(nodes = []) {
-  return nodes.map((node) => ({
-    nodeId: node.nodeId,
-    name: node.nodeName,
-    start: node.startDate || '--',
-    duration: node.nodeCode || '',
-    rawStatus: node.workStatus || null,
-    status: mapNodeStatus(node.workStatus),
-    routeName: node.routeName,
-    companyName: node.companyName,
-    // Unsourced metrics -- explicitly absent, not zero.
-    photosUploaded: null,
-    photosTotal: null,
-    photosPct: null,
-    reports: null,
-    missedDays: null,
-    milestones: null,
-  }));
+  return nodes.map((node) => {
+    const m = node.metrics || null;
+    return {
+      nodeId: node.nodeId,
+      name: node.nodeName,
+      start: node.startDate || '--',
+      duration: node.nodeCode || '',
+      rawStatus: node.workStatus || null,
+      status: mapNodeStatus(node.workStatus),
+      routeName: node.routeName,
+      companyName: node.companyName,
+
+      // LIVE: milestone progress and daily reports.
+      milestones: m ? m.milestones : null,
+      milestonesMapped: m ? m.milestonesMapped : false,
+      reports: m ? m.reports : null,
+      reportDays: m ? m.reportDays : null,
+      lastReport: m ? m.lastReport : null,
+      stagePhotos: m ? m.stagePhotos : null,
+
+      // Still unsourced -- explicitly absent, never zero.
+      photosUploaded: null,
+      photosTotal: null,
+      photosPct: null,
+      // No expected-cadence rule exists yet, so this stays absent rather than
+      // being invented from a guessed schedule.
+      missedDays: null,
+    };
+  });
 }
 
 export const SORTS = {

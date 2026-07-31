@@ -218,9 +218,28 @@ export function ProgressCell({ done, total, pct, color }) {
   );
 }
 
-export function ReportsCell({ count, missedDays }) {
+/**
+ * Daily reports. `missedDays` is optional: no table defines the expected
+ * reporting cadence, so rather than invent a "days missed" figure from a guessed
+ * schedule, the sub-label falls back to the number of days actually reported.
+ */
+export function ReportsCell({ count, missedDays, reportDays }) {
   if (count === null || count === undefined)
     return <NoDataCell hint="Daily reports: source not yet identified" />;
+
+  if (missedDays === null || missedDays === undefined) {
+    return (
+      <div className="mon-reports">
+        <span className="mon-reports-value">{count}</span>
+        <p className="mon-reports-sub" style={{ color: '#5A6478' }}>
+          {count === 0
+            ? 'none submitted'
+            : `on ${reportDays ?? count} day${(reportDays ?? count) === 1 ? '' : 's'}`}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="mon-reports">
       <span className="mon-reports-value">{count}</span>
@@ -231,27 +250,58 @@ export function ReportsCell({ count, missedDays }) {
   );
 }
 
-/** Four milestone blocks + an "n/4 milestones" summary. */
-export function MilestoneCell({ milestones, colorFor }) {
+/**
+ * Four milestone blocks + an "n/4 milestones" summary.
+ *
+ * Accepts live milestone objects ({label, pct, done, total, measurable}) or a
+ * plain array of percentages. A milestone with `pct === null` is UNMEASURABLE,
+ * not 0% -- M1 is document-based with no source, and nodes on a non-standard
+ * checklist template have no mapped stages at all. Those render as an empty
+ * track with an explanatory tooltip, and are excluded from the "n/4" count so a
+ * node is never reported as behind on something that cannot be measured.
+ */
+export function MilestoneCell({ milestones, colorFor, mapped = true }) {
   if (!milestones) return <NoDataCell hint="Milestones: source not yet identified" />;
-  const done = milestones.filter((m) => m === 100).length;
+
+  const items = milestones.map((m, i) =>
+    typeof m === 'number'
+      ? { label: `M${i + 1}`, pct: m, measurable: true }
+      : { ...m, label: m.label || `M${i + 1}` }
+  );
+
+  const measurable = items.filter((m) => m.pct !== null && m.pct !== undefined);
+  const done = measurable.filter((m) => m.pct === 100).length;
+
+  const tip = (m) => {
+    if (m.pct === null || m.pct === undefined) {
+      return `${m.label}: not measurable${m.reason ? ` -- ${m.reason}` : ''}`;
+    }
+    return `${m.label}${m.name ? ` (${m.name})` : ''}: ${m.pct}%${
+      m.total ? ` -- ${m.done} of ${m.total} stages` : ''
+    }`;
+  };
+
   return (
     <div className="mon-miles">
       <div className="mon-miles-blocks">
-        {milestones.map((pct, i) => (
+        {items.map((m) => (
           <div
-            key={i}
+            key={m.label}
             className="mon-miles-block"
-            title={`M${i + 1}: ${pct}%`}
-            style={{ background: colorFor(pct) }}
+            title={tip(m)}
+            style={{ background: m.pct === null || m.pct === undefined ? EMPTY_TRACK : colorFor(m.pct) }}
           />
         ))}
       </div>
       <p
         className="mon-miles-sub"
-        style={{ color: done === milestones.length ? '#34E0A1' : '#5A6478' }}
+        style={{ color: measurable.length > 0 && done === measurable.length ? '#34E0A1' : '#5A6478' }}
       >
-        {done}/{milestones.length} milestones
+        {!mapped
+          ? 'template not mapped'
+          : measurable.length === 0
+            ? 'not measurable'
+            : `${done}/${measurable.length} milestones`}
       </p>
     </div>
   );

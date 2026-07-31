@@ -15,10 +15,17 @@
  */
 const sf = require('../db/snowflake');
 const cache = require('../cache/queryCache');
+const { MILESTONES, MAPPED_STAGES, MIN_MAPPED_STAGES } = require('../config/milestones');
 
 const NODE = '"ECSITE"."ANALYTICS"."CLOUD_NODE"';
 const SITE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS"';
 const NODE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_NODE_STATUS_HISTORY_WITH_COUNTS"';
+/** Per-node checklist definition (SCD2 -- always filter DBT_VALID_TO IS NULL). */
+const FORMGROUP = '"ECSITE"."ANALYTICS"."CLOUD_FORMGOUP_SS"';
+/** Raw uploaded media. Match on NODEIDLIST, not the scalar NODEID -- see getNodeMetrics. */
+const FIELD_MEDIA = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FIELDMEDIA"';
+/** Form submissions, including the DAILY REPORT FORM. */
+const FORM_ANSWERS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERANSWERS"';
 
 /** Default tenant scope until RLS is wired. */
 const DEFAULT_COMPANY_PATTERN = '%Telamon%';
@@ -226,6 +233,148 @@ async function getStatusCounts(scope = {}) {
 }
 
 /**
+ * Per-node milestone progress and daily-report counts.
+ *
+ * Three sources, one query:
+ *   CLOUD_FORMGOUP_SS.LIST   the per-node checklist -> which stages exist
+ *   CLOUD_ECSITE_FIELDMEDIA  media per stage        -> which stages have started
+ *   ...FORMBUILDERANSWERS    submissions of the node's DAILY REPORT FORM
+ *
+ * Two correctness details, both verified against the data rather than assumed:
+ *
+ * 1. Media is matched on NODEIDLIST (the array), NOT the scalar NODEID column,
+ *    and counts MIME IN ('photo','image'). The scalar is NULL on most rows: for
+ *    one node it saw 19 of 86 media rows, reporting "Shelter Placement: 0" when
+ *    the true figure was 12. With the array rule, per-stage counts sum to 45 --
+ *    exactly matching PHOTOLISTENTRIES in CLOUD_PHOTOCOUNT_PHOTOLIST_AGG.
+ *
+ * 2. The DAILY REPORT FORM's formId differs per node, so it is read from that
+ *    node's own checklist rather than hardcoded.
+ */
+async function getNodeMetrics(scope = {}) {
+  return cache.wrap('monitor-node-metrics', scope, async () => {
+    const where = buildScope(scope, { withNode: true });
+
+    // Safe to interpolate: these are validated lowercase-alphanumeric constants
+    // from config/milestones.js, never request input. See the guard there.
+    const inList = (stages) => stages.map((s) => `'${s}'`).join(', ');
+    const milestoneAgg = MILESTONES.filter((m) => m.stages.length > 0)
+      .map(
+        (m) => `
+             COUNT_IF(sm.NORM IN (${inList(m.stages)}))                      AS ${m.key}_total,
+             COUNT_IF(sm.NORM IN (${inList(m.stages)}) AND sm.PHOTOS > 0)    AS ${m.key}_done`
+      )
+      .join(',');
+
+    const sql = `
+      WITH scoped AS (
+        SELECT "nodeId" AS NODEID FROM ${NODE} ${where.sql}
+      ),
+      fg AS (
+        SELECT nl.value::STRING AS NODEID, f.value AS ITEM
+          FROM ${FORMGROUP} g,
+               LATERAL FLATTEN(input => g.NODEIDLIST) nl,
+               LATERAL FLATTEN(input => g.LIST) f
+         WHERE g.DBT_VALID_TO IS NULL                       -- SCD2: current only
+           AND NOT COALESCE(f.value:isDeleted::BOOLEAN, FALSE)
+      ),
+      stages AS (
+        SELECT s.NODEID,
+               LOWER(REGEXP_REPLACE(fg.ITEM:text::STRING, '[^a-zA-Z0-9]', '')) AS NORM,
+               fg.ITEM:formId::STRING AS FORM_ID
+          FROM scoped s JOIN fg ON fg.NODEID = s.NODEID
+         WHERE fg.ITEM:typeOfForm::STRING = 'photolist'
+      ),
+      stage_media AS (
+        SELECT st.NODEID, st.NORM, COUNT(m._ID) AS PHOTOS
+          FROM stages st
+          LEFT JOIN ${FIELD_MEDIA} m
+                 ON m.FORMID = st.FORM_ID
+                AND ARRAY_CONTAINS(st.NODEID::VARIANT, m.NODEIDLIST)
+                AND m.MIME IN ('photo', 'image')
+                AND NOT COALESCE(m.ISDELETED, FALSE)
+                AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
+         GROUP BY 1, 2
+      ),
+      milestones AS (
+        SELECT sm.NODEID,${milestoneAgg},
+               COUNT_IF(sm.NORM IN (${inList(MAPPED_STAGES)}))               AS mapped_total,
+               COUNT(*)                                                     AS all_stages,
+               SUM(sm.PHOTOS)                                               AS stage_photos
+          FROM stage_media sm GROUP BY 1
+      ),
+      daily_form AS (
+        SELECT s.NODEID, fg.ITEM:formId::STRING AS FORM_ID
+          FROM scoped s JOIN fg ON fg.NODEID = s.NODEID
+         WHERE fg.ITEM:text::STRING ILIKE '%DAILY REPORT%'
+      ),
+      reports AS (
+        SELECT d.NODEID,
+               COUNT(DISTINCT a.ANSWERSETID)             AS reports,
+               COUNT(DISTINCT TO_DATE(a.CREATEDAT))      AS report_days,
+               MAX(TO_VARCHAR(a.CREATEDAT,'YYYY-MM-DD')) AS last_report
+          FROM daily_form d
+          JOIN ${FORM_ANSWERS} a
+                ON a.FORMID = d.FORM_ID AND a.NODEID = d.NODEID
+         WHERE NOT COALESCE(a.ISDELETED, FALSE)
+         GROUP BY 1
+      )
+      SELECT s.NODEID,
+             COALESCE(ms.mapped_total, 0) AS mapped_total,
+             COALESCE(ms.all_stages, 0)   AS all_stages,
+             COALESCE(ms.stage_photos, 0) AS stage_photos,
+             ${MILESTONES.filter((m) => m.stages.length > 0)
+               .map((m) => `COALESCE(ms.${m.key}_total,0) AS ${m.key}_total, COALESCE(ms.${m.key}_done,0) AS ${m.key}_done`)
+               .join(', ')},
+             COALESCE(r.reports, 0)     AS reports,
+             COALESCE(r.report_days, 0) AS report_days,
+             r.last_report
+        FROM scoped s
+        LEFT JOIN milestones ms ON ms.NODEID = s.NODEID
+        LEFT JOIN reports    r  ON r.NODEID  = s.NODEID`;
+
+    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-node-metrics' });
+
+    const byNode = {};
+    for (const row of rows) {
+      const mappedTotal = Number(row.MAPPED_TOTAL) || 0;
+      // A node whose checklist matches no known stage is on a different template
+      // (0MH PHOTOS, WBS codes, in-building levels). Its milestones are not
+      // measurable, which is different from being at 0%.
+      const mapped = mappedTotal >= MIN_MAPPED_STAGES;
+
+      byNode[row.NODEID] = {
+        milestonesMapped: mapped,
+        mappedStages: mappedTotal,
+        totalStages: Number(row.ALL_STAGES) || 0,
+        stagePhotos: Number(row.STAGE_PHOTOS) || 0,
+        milestones: MILESTONES.map((m) => {
+          if (m.stages.length === 0) {
+            return { key: m.key, label: m.label, name: m.name, measurable: false, reason: m.unmeasurableReason, pct: null, done: 0, total: 0 };
+          }
+          const total = Number(row[`${m.key.toUpperCase()}_TOTAL`]) || 0;
+          const done = Number(row[`${m.key.toUpperCase()}_DONE`]) || 0;
+          return {
+            key: m.key,
+            label: m.label,
+            name: m.name,
+            measurable: mapped && total > 0,
+            done,
+            total,
+            pct: mapped && total > 0 ? Math.round((done / total) * 100) : null,
+          };
+        }),
+        reports: Number(row.REPORTS) || 0,
+        reportDays: Number(row.REPORT_DAYS) || 0,
+        lastReport: row.LAST_REPORT || null,
+      };
+    }
+
+    return { byNode, nodeCount: rows.length, elapsedMs };
+  });
+}
+
+/**
  * The Company > Site > Node hierarchy, built from the id keys.
  *
  * One query, nested in JS rather than three round trips: CLOUD_NODE already
@@ -384,16 +533,17 @@ async function getRouteMonitor(scope = {}) {
     ? routes.routes.find((r) => r.siteId === scope.siteId)
     : routes.routes[0];
 
-  // Table rows: the nodes in scope. Fetched here rather than by a second client
-  // call so the header, KPI and rows are always the same slice of data.
-  const nodes = await listNodes(scope);
+  // Table rows: the nodes in scope, plus their milestone/report metrics. Fetched
+  // here rather than by separate client calls so the header, KPI and rows are
+  // always the same slice of data.
+  const [nodes, metrics] = await Promise.all([listNodes(scope), getNodeMetrics(scope)]);
 
   return {
     route: selected
       ? { siteId: selected.siteId, name: selected.routeName, companyName: selected.companyName, nodeCount: selected.nodeCount }
       : null,
     routes: routes.routes,
-    nodes: nodes.nodes,
+    nodes: nodes.nodes.map((n) => ({ ...n, metrics: metrics.byNode[n.nodeId] || null })),
     statusCounts,
   };
 }
@@ -434,6 +584,7 @@ module.exports = {
   classifyStatus,
   getStatusCounts,
   getHierarchy,
+  getNodeMetrics,
   listRoutes,
   listNodes,
   getRouteMonitor,
