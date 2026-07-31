@@ -73,6 +73,25 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
 
   const scopeNote = describeStatusScope(kpi);
 
+  /**
+   * Card totals, summed from the SAME rows the table renders, so the card can
+   * never disagree with the list beneath it.
+   *
+   * Summed over all rows in scope rather than the filtered `visible` set, to
+   * match how TOTAL SITES behaves -- the cards describe the selection, the
+   * search box only narrows what is listed.
+   */
+  const totals = useMemo(() => {
+    if (!isLive) return { reports: summary.totalReports, reportDays: null, hasReports: true };
+    const withReports = rows.filter((r) => r.reports !== null && r.reports !== undefined);
+    return {
+      reports: withReports.reduce((sum, r) => sum + r.reports, 0),
+      reportDays: withReports.reduce((sum, r) => sum + (r.reportDays || 0), 0),
+      hasReports: withReports.length > 0,
+      nodesReporting: withReports.filter((r) => r.reports > 0).length,
+    };
+  }, [isLive, rows, summary.totalReports]);
+
   return (
     <div className="mon-shell">
       <MonitorHeader
@@ -129,7 +148,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           // so it tracks the selection (198 all Telamon -> 16 one route -> 1 node).
           { label: 'TOTAL SITES', value: kpiTotal, color: '#F7F8FB' },
           { label: 'PHOTOS UPLOADED %', value: `${summary.avgPhotoPct}%`, color: pctColor(summary.avgPhotoPct) },
-          { label: 'DAILY REPORTS SUBMITTED', value: summary.totalReports, color: '#F7F8FB' },
+          // Live: summed from the rows in scope.
+          { label: 'DAILY REPORTS SUBMITTED', value: totals.reports, color: '#F7F8FB' },
           {
             label: 'MISSED REPORT DAYS',
             value: summary.totalMissedDays,
