@@ -132,7 +132,6 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   );
 
   const overallStatus = siteStatus(summary);
-  const photoPct = percent(data.photos.uploaded, data.photos.total);
 
   // Live values win where they exist; sample data fills the rest.
   const siteName = live?.site?.name || data.site.name;
@@ -197,6 +196,71 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     }
     return out;
   }, [stages, query, status, milestone, sort]);
+
+  /**
+   * Photo coverage bar.
+   *
+   * Numerator is `fieldsCovered` (distinct photo fields with media), NOT the raw
+   * photo count -- 593 photos across 166 fields is 63% coverage, not 357%. The
+   * photo total itself is exact and validated against the portal; coverage is
+   * approximate because media rows carry answer-level ids that do not join back
+   * to question ids, and because the N/A flag has no source to exclude.
+   */
+  const photoBar = useMemo(() => {
+    if (!liveMs) {
+      const pct = percent(data.photos.uploaded, data.photos.total);
+      return {
+        pct,
+        color: statusColor(overallStatus),
+        label: `${data.photos.uploaded}/${data.photos.total} · ${pct}%`,
+        note: null,
+      };
+    }
+    const pct = liveMs.photoPct ?? 0;
+    return {
+      pct,
+      color: pctColor(pct),
+      label: `${liveMs.fieldsCovered}/${liveMs.photoFields} · ${pct}%`,
+      note: `${liveMs.photos} photos uploaded (exact)${
+        liveMs.photoPctApproximate ? ' · coverage approximate, N/A fields not excluded' : ''
+      }`,
+    };
+  }, [liveMs, data.photos, overallStatus]);
+
+  /**
+   * Daily reports for this node.
+   *
+   * `submitted` counts submissions and `reportDays` counts distinct days, so 31
+   * reports over 26 days is normal -- more than one report can land in a day.
+   * `missedDays` is weekdays with no report inside the node's own reporting
+   * window (first to last report), so a node that never reported has no window
+   * and shows "--" rather than a fabricated zero.
+   */
+  const reportsCard = useMemo(() => {
+    if (!liveMs) {
+      return {
+        submitted: data.reports.submitted,
+        submittedNote: null,
+        missedDays: data.reports.missedDays,
+        missedNote: null,
+      };
+    }
+    const days = liveMs.reportDays;
+    return {
+      submitted: liveMs.reports,
+      submittedNote:
+        liveMs.reports === 0
+          ? 'none submitted'
+          : `on ${days} day${days === 1 ? '' : 's'}${
+              liveMs.lastReport ? ` · last ${liveMs.lastReport}` : ''
+            }`,
+      missedDays: liveMs.missedDays ?? null,
+      missedNote:
+        liveMs.missedDays === null || liveMs.missedDays === undefined
+          ? 'no reporting window'
+          : 'weekdays with no report, within this node\u2019s reporting window',
+    };
+  }, [liveMs, data.reports]);
 
   const milestoneOptions = [
     'All milestones',
@@ -362,37 +426,53 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         ]}
       />
 
-      {/* Photos & daily reports */}
+      {/* Photos & daily reports -- same figures as the Route Monitor's row for
+          this node, read from the same getNodeMetrics source so the two tabs
+          cannot disagree. */}
       <div className="mon-card">
         <p className="mon-card-label mon-card-label--lg">PHOTOS &amp; DAILY REPORTS</p>
         <div className="mon-pr">
           <div className="mon-pr-main">
             <div className="mon-pr-head">
-              <span className="mon-pr-caption">Photos uploaded</span>
-              <span className="mon-pr-value" style={{ color: statusColor(overallStatus) }}>
-                {data.photos.uploaded}/{data.photos.total} · {photoPct}%
+              <span className="mon-pr-caption">Photo fields covered</span>
+              <span className="mon-pr-value" style={{ color: photoBar.color }}>
+                {photoBar.label}
               </span>
             </div>
             <div className="mon-pr-track">
               <div
                 className="mon-pr-fill"
-                style={{ width: `${photoPct}%`, background: statusColor(overallStatus) }}
+                style={{ width: `${photoBar.pct}%`, background: photoBar.color }}
               />
             </div>
+            {photoBar.note ? <p className="mon-cell-sub">{photoBar.note}</p> : null}
           </div>
           <div className="mon-pr-side">
             <div>
-              <p className="mon-pr-num">{data.reports.submitted}</p>
+              <p className="mon-pr-num">{reportsCard.submitted}</p>
               <p className="mon-pr-sub">Daily reports submitted</p>
+              {reportsCard.submittedNote ? (
+                <p className="mon-cell-sub">{reportsCard.submittedNote}</p>
+              ) : null}
             </div>
             <div>
               <p
                 className="mon-pr-num"
-                style={{ color: data.reports.missedDays > 0 ? DANGER : statusColor(STATUS.COMPLETE) }}
+                style={{
+                  color:
+                    reportsCard.missedDays === null
+                      ? '#5A6478'
+                      : reportsCard.missedDays > 0
+                        ? DANGER
+                        : statusColor(STATUS.COMPLETE),
+                }}
               >
-                {data.reports.missedDays}
+                {reportsCard.missedDays === null ? '--' : reportsCard.missedDays}
               </p>
               <p className="mon-pr-sub">Days missed</p>
+              {reportsCard.missedNote ? (
+                <p className="mon-cell-sub">{reportsCard.missedNote}</p>
+              ) : null}
             </div>
           </div>
         </div>
