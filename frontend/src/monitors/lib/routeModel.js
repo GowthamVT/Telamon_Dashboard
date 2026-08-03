@@ -131,13 +131,23 @@ export function rowsFromNodes(nodes = []) {
       lastReport: m ? m.lastReport : null,
       stagePhotos: m ? m.stagePhotos : null,
 
-      // Still unsourced -- explicitly absent, never zero.
-      photosUploaded: null,
-      photosTotal: null,
-      photosPct: null,
-      // No expected-cadence rule exists yet, so this stays absent rather than
-      // being invented from a guessed schedule.
-      missedDays: null,
+      /**
+       * PHOTOS column = photo fields covered / photo fields defined.
+       *
+       * Not photos/fields: a field takes many photos, so that ratio can exceed
+       * 100% (554 photos across 154 fields = 360%). `photos` is carried
+       * separately for the tooltip -- it and `photoFields` are both verified
+       * exact against the portal, while the coverage numerator is approximate.
+       */
+      photosUploaded: m ? m.fieldsCovered : null,
+      photosTotal: m ? m.photoFields : null,
+      photosPct: m ? m.photoPct : null,
+      photoCount: m ? m.photos : null,
+      photoPctApproximate: m ? m.photoPctApproximate === true : false,
+
+      // Working days inside the observed reporting window that had no report.
+      // NULL where the node never reported -- no window, so nothing to measure.
+      missedDays: m ? m.missedDays : null,
     };
   });
 }

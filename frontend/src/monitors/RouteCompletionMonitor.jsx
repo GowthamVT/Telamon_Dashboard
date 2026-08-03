@@ -82,15 +82,34 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
    * search box only narrows what is listed.
    */
   const totals = useMemo(() => {
-    if (!isLive) return { reports: summary.totalReports, reportDays: null, hasReports: true };
+    if (!isLive) {
+      return {
+        reports: summary.totalReports,
+        missedDays: summary.totalMissedDays,
+        photoPct: summary.avgPhotoPct,
+      };
+    }
     const withReports = rows.filter((r) => r.reports !== null && r.reports !== undefined);
+    const withMissed = rows.filter((r) => r.missedDays !== null && r.missedDays !== undefined);
+    // Photo % is pooled (total covered / total defined), not a mean of per-node
+    // percentages: averaging percentages would weight a 1-field node the same as
+    // a 165-field one.
+    const covered = rows.reduce((sum, r) => sum + (r.photosUploaded || 0), 0);
+    const defined = rows.reduce((sum, r) => sum + (r.photosTotal || 0), 0);
+
     return {
       reports: withReports.reduce((sum, r) => sum + r.reports, 0),
       reportDays: withReports.reduce((sum, r) => sum + (r.reportDays || 0), 0),
-      hasReports: withReports.length > 0,
+      // Summed only over nodes that HAVE a reporting window; nodes that never
+      // reported contribute nothing rather than a fabricated zero.
+      missedDays: withMissed.length ? withMissed.reduce((sum, r) => sum + r.missedDays, 0) : null,
+      nodesWithWindow: withMissed.length,
       nodesReporting: withReports.filter((r) => r.reports > 0).length,
+      photoPct: defined > 0 ? Math.round((covered / defined) * 100) : null,
+      photoCovered: covered,
+      photoDefined: defined,
     };
-  }, [isLive, rows, summary.totalReports]);
+  }, [isLive, rows, summary]);
 
   return (
     <div className="mon-shell">
@@ -147,13 +166,22 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           // Live: the number of nodes in the current Company > Site > Node scope,
           // so it tracks the selection (198 all Telamon -> 16 one route -> 1 node).
           { label: 'TOTAL SITES', value: kpiTotal, color: '#F7F8FB' },
-          { label: 'PHOTOS UPLOADED %', value: `${summary.avgPhotoPct}%`, color: pctColor(summary.avgPhotoPct) },
+          {
+            label: 'PHOTOS UPLOADED %',
+            value: totals.photoPct === null ? '--' : `${totals.photoPct}%`,
+            color: totals.photoPct === null ? '#5A6478' : pctColor(totals.photoPct),
+          },
           // Live: summed from the rows in scope.
           { label: 'DAILY REPORTS SUBMITTED', value: totals.reports, color: '#F7F8FB' },
           {
             label: 'MISSED REPORT DAYS',
-            value: summary.totalMissedDays,
-            color: summary.totalMissedDays > 0 ? DANGER : statusColor(STATUS.COMPLETE),
+            value: totals.missedDays === null ? '--' : totals.missedDays,
+            color:
+              totals.missedDays === null
+                ? '#5A6478'
+                : totals.missedDays > 0
+                  ? DANGER
+                  : statusColor(STATUS.COMPLETE),
           },
         ]}
       />

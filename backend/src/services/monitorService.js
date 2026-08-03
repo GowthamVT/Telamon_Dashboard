@@ -26,6 +26,10 @@ const FORMGROUP = '"ECSITE"."ANALYTICS"."CLOUD_FORMGOUP_SS"';
 const FIELD_MEDIA = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FIELDMEDIA"';
 /** Form submissions, including the DAILY REPORT FORM. */
 const FORM_ANSWERS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERANSWERS"';
+/** Form definitions; LIST holds the questions (element='Photo' = a photo field). */
+const FORM_QUESTIONS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERQUESTIONS"';
+/** Date dimension -- "Day of Week" 1=Sunday, 7=Saturday. No holiday flag. */
+const CALENDAR = '"ECSITE"."ANALYTICS"."CALENDAR"';
 
 /** Default tenant scope until RLS is wired. */
 const DEFAULT_COMPANY_PATTERN = '%Telamon%';
@@ -303,20 +307,74 @@ async function getNodeMetrics(scope = {}) {
                SUM(sm.PHOTOS)                                               AS stage_photos
           FROM stage_media sm GROUP BY 1
       ),
+      -- Distinct photolist forms per node (DISTINCT so a form listed twice cannot
+      -- double-count its fields).
+      stage_forms AS (
+        SELECT DISTINCT NODEID, FORM_ID FROM stages
+      ),
+      -- Denominator: photo FIELDS defined for the node. element='Photo' excludes
+      -- 'Section_Header' rows, which are layout, not fields -- verified against the
+      -- portal on two nodes (165 photo + 30 headers = 195 questions).
+      photo_fields AS (
+        SELECT sf.NODEID,
+               COUNT_IF(qi.value:element::STRING = 'Photo') AS photo_fields
+          FROM stage_forms sf
+          JOIN ${FORM_QUESTIONS} q
+                ON q._ID = sf.FORM_ID AND NOT COALESCE(q.ISDELETED, FALSE),
+               LATERAL FLATTEN(input => q.LIST) qi
+         GROUP BY 1
+      ),
+      -- Numerator: photos uploaded, and how many distinct fields they cover.
+      photo_media AS (
+        SELECT sf.NODEID,
+               COUNT(m._ID)                 AS photos,
+               COUNT(DISTINCT m.QUESTIONID) AS fields_covered
+          FROM stage_forms sf
+          JOIN ${FIELD_MEDIA} m
+                ON m.FORMID = sf.FORM_ID
+               AND ARRAY_CONTAINS(sf.NODEID::VARIANT, m.NODEIDLIST)
+               AND NOT COALESCE(m.ISDELETED, FALSE)
+               AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
+         GROUP BY 1
+      ),
       daily_form AS (
         SELECT s.NODEID, fg.ITEM:formId::STRING AS FORM_ID
           FROM scoped s JOIN fg ON fg.NODEID = s.NODEID
          WHERE fg.ITEM:text::STRING ILIKE '%DAILY REPORT%'
       ),
-      reports AS (
-        SELECT d.NODEID,
-               COUNT(DISTINCT a.ANSWERSETID)             AS reports,
-               COUNT(DISTINCT TO_DATE(a.CREATEDAT))      AS report_days,
-               MAX(TO_VARCHAR(a.CREATEDAT,'YYYY-MM-DD')) AS last_report
+      report_days AS (
+        SELECT d.NODEID, TO_DATE(a.CREATEDAT) AS rpt_day, COUNT(DISTINCT a.ANSWERSETID) AS subs
           FROM daily_form d
           JOIN ${FORM_ANSWERS} a
                 ON a.FORMID = d.FORM_ID AND a.NODEID = d.NODEID
          WHERE NOT COALESCE(a.ISDELETED, FALSE)
+         GROUP BY 1, 2
+      ),
+      reports AS (
+        SELECT NODEID,
+               SUM(subs)                        AS reports,
+               COUNT(*)                         AS report_days,
+               MIN(rpt_day)                     AS first_day,
+               MAX(rpt_day)                     AS last_day,
+               TO_VARCHAR(MAX(rpt_day),'YYYY-MM-DD') AS last_report
+          FROM report_days GROUP BY 1
+      ),
+      -- Missed days = working days inside the OBSERVED reporting window minus the
+      -- days actually reported.
+      --
+      -- Measured from first-to-last submission rather than from the node start
+      -- date: reporting on these routes began ~2026-05-28 while nodes started
+      -- 2025-11-18, so counting from node start returns ~200 for every node and
+      -- measures the pre-reporting era rather than missed work.
+      --
+      -- Weekends excluded via CALENDAR."Day of Week" (1=Sun, 7=Sat). CALENDAR has
+      -- no holiday flag, so public holidays still count as missed.
+      working_days AS (
+        SELECT r.NODEID, COUNT(*) AS work_days
+          FROM reports r
+          JOIN ${CALENDAR} c
+                ON c."Date" BETWEEN r.first_day AND r.last_day
+               AND c."Day of Week" NOT IN (1, 7)
          GROUP BY 1
       )
       SELECT s.NODEID,
@@ -326,12 +384,22 @@ async function getNodeMetrics(scope = {}) {
              ${MILESTONES.filter((m) => m.stages.length > 0)
                .map((m) => `COALESCE(ms.${m.key}_total,0) AS ${m.key}_total, COALESCE(ms.${m.key}_done,0) AS ${m.key}_done`)
                .join(', ')},
+             COALESCE(pf.photo_fields, 0)   AS photo_fields,
+             COALESCE(pm.photos, 0)         AS photos,
+             COALESCE(pm.fields_covered, 0) AS fields_covered,
              COALESCE(r.reports, 0)     AS reports,
              COALESCE(r.report_days, 0) AS report_days,
-             r.last_report
+             r.last_report,
+             -- NULL when the node never reported: there is no window to measure,
+             -- which is different from having missed zero days.
+             CASE WHEN r.report_days IS NULL THEN NULL
+                  ELSE GREATEST(COALESCE(wd.work_days, 0) - r.report_days, 0) END AS missed_days
         FROM scoped s
-        LEFT JOIN milestones ms ON ms.NODEID = s.NODEID
-        LEFT JOIN reports    r  ON r.NODEID  = s.NODEID`;
+        LEFT JOIN milestones   ms ON ms.NODEID = s.NODEID
+        LEFT JOIN photo_fields pf ON pf.NODEID = s.NODEID
+        LEFT JOIN photo_media  pm ON pm.NODEID = s.NODEID
+        LEFT JOIN reports      r  ON r.NODEID  = s.NODEID
+        LEFT JOIN working_days wd ON wd.NODEID = s.NODEID`;
 
     const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-node-metrics' });
 
@@ -367,6 +435,33 @@ async function getNodeMetrics(scope = {}) {
         reports: Number(row.REPORTS) || 0,
         reportDays: Number(row.REPORT_DAYS) || 0,
         lastReport: row.LAST_REPORT || null,
+        // NULL (not 0) when the node has never reported -- nothing to measure.
+        missedDays: row.MISSED_DAYS === null || row.MISSED_DAYS === undefined
+          ? null
+          : Number(row.MISSED_DAYS),
+
+        /**
+         * Photo progress = fields covered / photo fields defined.
+         *
+         * NOT photos/fields: a field accepts many photos, so that ratio exceeds
+         * 100% (PASS CHRISTIAN uploads 554 photos across 154 fields = 360%).
+         *
+         * `fieldsCovered` counts DISTINCT media QUESTIONID. Cross-checked against
+         * the portal's "fields without media": within 1 on one node (108 vs 109)
+         * but 5 out on another (11 vs 16), so the PERCENTAGE IS APPROXIMATE. The
+         * exact field<->media link is not reproducible from the columns
+         * available -- media.QUESTIONID does not match question _ids. `photos`
+         * and `photoFields` are both verified exact against the portal, so they
+         * are exposed separately for anyone who needs a defensible figure.
+         */
+        photoFields: Number(row.PHOTO_FIELDS) || 0,
+        photos: Number(row.PHOTOS) || 0,
+        fieldsCovered: Number(row.FIELDS_COVERED) || 0,
+        photoPct:
+          Number(row.PHOTO_FIELDS) > 0
+            ? Math.min(100, Math.round((Number(row.FIELDS_COVERED) / Number(row.PHOTO_FIELDS)) * 100))
+            : null,
+        photoPctApproximate: true,
       };
     }
 
