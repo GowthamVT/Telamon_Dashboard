@@ -59,6 +59,17 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     [rows, query, status, sort]
   );
 
+  /**
+   * Node names are NOT unique across Telamon -- "Alexander City" exists on two
+   * routes, "Greensburg" on five, "Bowling Green" on three. When the current
+   * scope spans more than one route, show the route on each row so identically
+   * named nodes can be told apart.
+   */
+  const showRouteOnRows = useMemo(
+    () => new Set(rows.map((r) => r.routeName).filter(Boolean)).size > 1,
+    [rows]
+  );
+
   // Live values win where they exist; sample data fills the rest.
   const routeName = live?.route?.name || data.route.name;
   const kpi = live?.statusCounts || null;
@@ -220,6 +231,11 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                   {site.duration ? ` · ${site.duration}` : ''}
                   {site.rawStatus ? ` · ${site.rawStatus}` : ''}
                 </p>
+                {showRouteOnRows && site.routeName ? (
+                  <p className="mon-cell-sub" style={{ color: '#4C8DFF' }}>
+                    {site.routeName}
+                  </p>
+                ) : null}
               </div>
               <ProgressCell
                 done={site.photosUploaded}

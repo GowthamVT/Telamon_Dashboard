@@ -337,16 +337,27 @@ async function getNodeMetrics(scope = {}) {
                AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
          GROUP BY 1
       ),
-      daily_form AS (
-        SELECT s.NODEID, fg.ITEM:formId::STRING AS FORM_ID
-          FROM scoped s JOIN fg ON fg.NODEID = s.NODEID
-         WHERE fg.ITEM:text::STRING ILIKE '%DAILY REPORT%'
+      /**
+       * Daily-report forms, identified by FORM NAME in the form definitions.
+       *
+       * Deliberately NOT looked up via the node's checklist: the DAILY REPORT
+       * FORM frequently is not listed there. Alexander City has 19 submissions
+       * but its checklist contains only COP-Documents and TELAMON-ILA-TRACKER,
+       * so the checklist route reported 0 while the portal showed 20.
+       *
+       * This also catches variants such as "INTEGRATION DAILY REPORT FORM-360".
+       */
+      daily_forms AS (
+        SELECT DISTINCT q._ID AS FORM_ID
+          FROM ${FORM_QUESTIONS} q
+         WHERE q.FORMNAME ILIKE '%DAILY REPORT%'
+           AND NOT COALESCE(q.ISDELETED, FALSE)
       ),
       report_days AS (
-        SELECT d.NODEID, TO_DATE(a.CREATEDAT) AS rpt_day, COUNT(DISTINCT a.ANSWERSETID) AS subs
-          FROM daily_form d
-          JOIN ${FORM_ANSWERS} a
-                ON a.FORMID = d.FORM_ID AND a.NODEID = d.NODEID
+        SELECT s.NODEID, TO_DATE(a.CREATEDAT) AS rpt_day, COUNT(DISTINCT a.ANSWERSETID) AS subs
+          FROM scoped s
+          JOIN ${FORM_ANSWERS} a ON a.NODEID = s.NODEID
+          JOIN daily_forms d     ON d.FORM_ID = a.FORMID
          WHERE NOT COALESCE(a.ISDELETED, FALSE)
          GROUP BY 1, 2
       ),
