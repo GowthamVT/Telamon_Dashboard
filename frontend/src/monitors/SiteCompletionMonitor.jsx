@@ -28,20 +28,28 @@ const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 /** Grey track for an unmeasurable value -- visually distinct from 0%, which is red. */
 const EMPTY_TRACK = '#2A3142';
 
-/**
- * Checklist filters. "Extra" means the form exists on the node but is absent from
- * its CLOUD_FORMGOUP_SS checklist -- worth surfacing rather than hiding: Wadley's
- * DAILY REPORT FORM, with 31 submissions, is one of those.
- */
-const ITEM_FILTERS = ['All', 'Complete', 'Incomplete', 'Extra'];
-const ITEM_SORTS = ['Checklist order', 'Milestone order', 'Evidence', 'Name'];
+/** Filter pills use the same three words as the STATUS column. */
+const ITEM_FILTERS = ['All', 'Complete', 'Missing', 'N/A'];
 
 /** m1 < m2 < m3 < m4 < unmapped, so unmapped stages read as an appendix. */
 function milestoneRank(key) {
   return key ? Number(String(key).replace(/[^0-9]/g, '')) || 99 : 99;
 }
 
-/** How each checklist item type shows completion, and what evidence to name. */
+/**
+ * The three statuses the dashboard reports, and how each one looks.
+ *
+ * Deliberately the same presentation as the sample table it replaces, so the
+ * column reads identically whether the data is live or not. Colour is never the
+ * only signal -- the word and the icon ship with it.
+ */
+const ITEM_STATUS_PRESENTATION = {
+  complete: { color: '#34E0A1', label: 'Complete', Icon: CircleCheck },
+  missing: { color: '#5A6478', label: 'Missing', Icon: Circle },
+  na: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
+};
+
+/** Human name for the form type behind an item. Unknown types say nothing. */
 const KIND_LABEL = {
   photolist: 'photo list',
   ondemand: 'form',
@@ -50,37 +58,37 @@ const KIND_LABEL = {
 };
 
 /**
- * One item of the node's checklist (CLOUD_FORMGOUP_SS.LIST).
+ * One row of the node's checklist (CLOUD_FORMGOUP_SS.LIST).
  *
- * Completion is EVIDENCE-BASED and says so: a photo list is done when photos
- * exist, a form when a submission exists. No table in the warehouse carries a
- * per-item sign-off, so nothing here claims approval.
+ * STATUS is Complete / Missing / N/A, classified in the backend. The sub-label
+ * carries the evidence behind that word -- photo counts, submission counts, the
+ * last date -- so the status is always auditable from the row itself.
  */
 function ChecklistRow({ item }) {
+  const { color, label, Icon } = ITEM_STATUS_PRESENTATION[item.status]
+    || ITEM_STATUS_PRESENTATION.missing;
   const isPhotos = item.kind === 'photolist';
-  const color = item.done ? '#34E0A1' : item.inChecklist ? '#5A6478' : '#9098A9';
-  const Icon = item.done ? CircleCheck : item.inChecklist ? Circle : CircleMinus;
-
-  const detail = [
-    item.section,
-    KIND_LABEL[item.kind] || item.kind,
-    isPhotos && item.photoFields
-      ? `${item.photoFields} photo field${item.photoFields === 1 ? '' : 's'}`
-      : null,
-    item.lastPhoto ? `last photo ${item.lastPhoto}` : null,
-    !isPhotos && item.lastSubmission ? `last ${item.lastSubmission}` : null,
-    item.inChecklist ? null : 'not in the node checklist',
-  ]
-    .filter(Boolean)
-    .join(' \u2014 ');
 
   const evidence = isPhotos
     ? item.photos > 0
-      ? `${item.photos} photos`
-      : 'No photos'
+      ? `${item.photos} photos of ${item.photoFields} field${item.photoFields === 1 ? '' : 's'}`
+      : item.photoFields
+        ? `no photos against ${item.photoFields} field${item.photoFields === 1 ? '' : 's'}`
+        : null
     : item.submissions > 0
       ? `${item.submissions} submission${item.submissions === 1 ? '' : 's'}`
-      : 'None';
+      : 'no submissions';
+
+  const detail = [
+    item.section,
+    KIND_LABEL[item.kind] || null,
+    evidence,
+    item.lastPhoto ? `last photo ${item.lastPhoto}` : null,
+    !isPhotos && item.lastSubmission ? `last ${item.lastSubmission}` : null,
+    item.statusReason,
+  ]
+    .filter(Boolean)
+    .join(' \u2014 ');
 
   return (
     <div className="mon-grid mon-trow mon-trow--tight" role="row">
@@ -90,11 +98,11 @@ function ChecklistRow({ item }) {
           {item.position ? `${item.position}. ` : ''}
           {item.name}
         </p>
-        <p className="mon-doc-sub">{detail}</p>
+        {detail ? <p className="mon-doc-sub">{detail}</p> : null}
       </div>
       <div className="mon-docstatus" style={{ color }}>
         <Icon size={16} aria-hidden="true" />
-        <span>{evidence}</span>
+        <span>{label}</span>
       </div>
     </div>
   );
@@ -199,32 +207,29 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const visibleItems = useMemo(() => {
     if (!checklist) return null;
     const q = query.trim().toLowerCase();
-    const evidenceOf = (it) => (it.kind === 'photolist' ? it.photos : it.submissions);
+    const WANTED = { Complete: 'complete', Missing: 'missing', 'N/A': 'na' };
 
     let out = checklist.filter((it) => {
       if (q && !it.name.toLowerCase().includes(q)) return false;
-      if (status === 'Complete' && !it.done) return false;
-      if (status === 'Incomplete' && it.done) return false;
-      if (status === 'Extra' && it.inChecklist) return false;
+      if (WANTED[status] && it.status !== WANTED[status]) return false;
       if (milestone !== 'All milestones' && (it.milestone || '').toUpperCase() !== milestone) {
         return false;
       }
       return true;
     });
 
-    if (sort === 'Evidence') out = [...out].sort((a, b) => evidenceOf(b) - evidenceOf(a));
-    else if (sort === 'Name') out = [...out].sort((a, b) => a.name.localeCompare(b.name));
-    else if (sort === 'Milestone order') {
+    const rank = { complete: 0, missing: 1, na: 2 };
+    if (sort === 'Status') {
+      out = [...out].sort(
+        (a, b) => rank[a.status] - rank[b.status] || (a.sequence ?? 999) - (b.sequence ?? 999)
+      );
+    } else if (sort === 'Name') {
+      out = [...out].sort((a, b) => a.name.localeCompare(b.name));
+    } else {
+      // Milestone order, then the node's own checklist sequence within it.
       out = [...out].sort(
         (a, b) =>
           milestoneRank(a.milestone) - milestoneRank(b.milestone) ||
-          (a.sequence ?? 999) - (b.sequence ?? 999)
-      );
-    } else {
-      // Checklist order: the node's own sequence, with the extra forms after it.
-      out = [...out].sort(
-        (a, b) =>
-          Number(b.inChecklist) - Number(a.inChecklist) ||
           (a.sequence ?? 999) - (b.sequence ?? 999) ||
           a.name.localeCompare(b.name)
       );
@@ -527,12 +532,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           label="Filter by status"
         />
         <Select value={milestone} onChange={setMilestone} options={milestoneOptions} label="Filter by milestone" />
-        <Select
-          value={sort}
-          onChange={setSort}
-          options={checklist ? ITEM_SORTS : SORT_OPTIONS}
-          label={checklist ? 'Sort checklist by' : 'Sort documents by'}
-        />
+        <Select value={sort} onChange={setSort} options={SORT_OPTIONS} label="Sort documents by" />
       </div>
 
       <div className="mon-table">
@@ -541,8 +541,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <div className="mon-table-scroll" style={{ '--mon-cols': COLS, '--mon-min': '640px' }}>
           <div className="mon-grid mon-thead" role="row">
             <div role="columnheader">MILESTONE</div>
-            <div role="columnheader">{visibleItems ? 'CHECKLIST ITEM' : 'DOCUMENT'}</div>
-            <div role="columnheader">{visibleItems ? 'EVIDENCE' : 'STATUS'}</div>
+            <div role="columnheader">DOCUMENT</div>
+            <div role="columnheader">STATUS</div>
           </div>
 
           {visibleItems
@@ -550,9 +550,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             : visible.map((item) => <DocumentRow key={item.id} item={item} />)}
 
           {(visibleItems || visible).length === 0 ? (
-            <div className="mon-empty-row">
-              No {visibleItems ? 'checklist items' : 'documents'} match your filters.
-            </div>
+            <div className="mon-empty-row">No documents match your filters.</div>
           ) : null}
         </div>
       </div>
@@ -560,11 +558,13 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       <p className="mon-foot">
         {visibleItems ? (
           <>
-            {visibleItems.length} of {checklist.length} checklist items shown ·{' '}
-            {checklist.filter((i) => i.inChecklist).length} defined in this node&rsquo;s checklist,{' '}
-            {checklist.filter((i) => !i.inChecklist).length} additional forms found on the node ·
-            complete means evidence exists (photos for a photo list, a submission for a form), not
-            sign-off
+            {visibleItems.length} of {checklist.length} documents shown ·{' '}
+            {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
+            {checklist.filter((i) => i.status === 'missing').length} Missing,{' '}
+            {checklist.filter((i) => i.status === 'na').length} N/A · Complete means evidence
+            exists (photos for a photo list, a submission for a form), not sign-off. N/A is
+            inferred &mdash; the warehouse carries no N/A flag &mdash; from items the checklist
+            marks conditional or does not require of this node.
           </>
         ) : (
           <>

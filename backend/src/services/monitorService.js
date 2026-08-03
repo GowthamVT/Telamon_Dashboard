@@ -600,6 +600,47 @@ async function getNodeStages(scope = {}) {
 }
 
 /**
+ * Items the checklist itself marks as conditional. This is the client's own
+ * wording -- "Fencing & Gates - if applicable", "Utility Construction (If
+ * Required)" -- so it is read from real data, not invented.
+ */
+const OPTIONAL_ITEM = /\b(if\s+applicable|if\s+required|optional)\b/i;
+
+/**
+ * Collapse a checklist item to the three statuses the dashboard reports:
+ * Complete / Missing / N/A.
+ *
+ * IMPORTANT CAVEAT: there is no N/A flag anywhere in the warehouse. We looked
+ * for one and it does not exist -- not on the checklist element, not on the form
+ * definition, not on the media rows. So N/A here is INFERRED from two signals,
+ * both defensible but neither authoritative:
+ *
+ *   1. The item is not part of this node's checklist at all. It was found on the
+ *      node as a form but was never required of the crew, so "missing" would be
+ *      a false accusation.
+ *   2. The item's own name marks it conditional ("if applicable", "If
+ *      Required"). The crew is not expected to complete it unless the site calls
+ *      for it, so counting it as missing overstates the gap.
+ *
+ * An item with evidence is Complete regardless of either signal -- work that was
+ * actually done is never reported as not-applicable.
+ *
+ * TODO(source): if the portal exposes a real per-item N/A flag, replace both
+ * inferences with it and delete OPTIONAL_ITEM. Until then the UI labels these as
+ * inferred so nobody reads them as the client's own sign-off.
+ */
+function classifyItemStatus({ name, done, inChecklist }) {
+  if (done) return { status: 'complete', statusReason: null };
+  if (!inChecklist) {
+    return { status: 'na', statusReason: 'not required by this node’s checklist' };
+  }
+  if (OPTIONAL_ITEM.test(name || '')) {
+    return { status: 'na', statusReason: 'the checklist marks this item conditional' };
+  }
+  return { status: 'missing', statusReason: null };
+}
+
+/**
  * The node's CHECKLIST -- what the Site Monitor's table is meant to show.
  *
  * Source is CLOUD_FORMGOUP_SS.LIST, the per-node checklist definition. Each
@@ -727,9 +768,10 @@ async function getNodeChecklist(scope = {}) {
     const byNode = {};
     for (const row of rows) {
       if (!byNode[row.NODEID]) byNode[row.NODEID] = [];
-      const kind = row.TYPE_OF_FORM || 'unknown';
+      const kind = row.TYPE_OF_FORM || null;
       const photos = Number(row.PHOTOS) || 0;
       const submissions = Number(row.SUBMISSIONS) || 0;
+      const inChecklist = row.IN_CHECKLIST === true || row.IN_CHECKLIST === 'true';
 
       /*
        * Completion signal depends on the item type. There is no sign-off column
@@ -737,10 +779,17 @@ async function getNodeChecklist(scope = {}) {
        * submissions for a form -- and nothing stronger is claimed.
        */
       const done = kind === 'photolist' ? photos > 0 : submissions > 0;
+      const { status, statusReason } = classifyItemStatus({
+        name: row.ITEM_NAME,
+        done,
+        inChecklist,
+      });
 
       byNode[row.NODEID].push({
         name: row.ITEM_NAME,
         kind,
+        status,
+        statusReason,
         formId: row.FORM_ID,
         sequence: row.SEQ === null || row.SEQ === undefined ? null : Number(row.SEQ),
         // "position" is the client's own ordering and can differ from sequence
@@ -755,7 +804,7 @@ async function getNodeChecklist(scope = {}) {
         lastPhoto: row.LAST_PHOTO || null,
         submissions,
         lastSubmission: row.LAST_SUBMISSION || null,
-        inChecklist: row.IN_CHECKLIST === true || row.IN_CHECKLIST === 'true',
+        inChecklist,
         done,
       });
     }
