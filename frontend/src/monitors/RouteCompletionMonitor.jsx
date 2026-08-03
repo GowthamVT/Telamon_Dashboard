@@ -140,9 +140,13 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
         ) : null}
         <div className="mon-hero">
           <HeroFigure
-            pct={summary.avgPhotoPct}
-            color={pctColor(summary.avgPhotoPct)}
-            caption="ROUTE AVG. PHOTO COMPLETION"
+            pct={totals.photoPct === null ? 0 : totals.photoPct}
+            color={pctColor(totals.photoPct === null ? 0 : totals.photoPct)}
+            caption={
+              totals.photoDefined
+                ? `PHOTO FIELDS COVERED (${totals.photoCovered}/${totals.photoDefined})`
+                : 'ROUTE AVG. PHOTO COMPLETION'
+            }
           />
           <div className="mon-hero-right">
             <CountBreakdown
@@ -242,6 +246,12 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 total={site.photosTotal}
                 pct={site.photosPct}
                 color={statusColor(site.status)}
+                note={site.photoCount === null ? null : `${site.photoCount} photos`}
+                title={
+                  site.photoCount === null
+                    ? undefined
+                    : `${site.photoCount} photos uploaded (exact) across ~${site.photosUploaded} of ${site.photosTotal} photo fields. Coverage is approximate; N/A fields are not excluded.`
+                }
               />
               <ReportsCell
                 count={site.reports}

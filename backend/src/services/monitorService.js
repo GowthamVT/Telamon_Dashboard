@@ -30,6 +30,12 @@ const FORM_ANSWERS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERANSWERS"';
 const FORM_QUESTIONS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERQUESTIONS"';
 /** Date dimension -- "Day of Week" 1=Sunday, 7=Saturday. No holiday flag. */
 const CALENDAR = '"ECSITE"."ANALYTICS"."CALENDAR"';
+/**
+ * Pre-aggregated photo counts per node/day.
+ * Use PHOTOLISTENTRIES (photolist media, matches the portal), NOT PHOTOENTRIES
+ * which counts all media and overstates -- 803 vs 593 for Wadley.
+ */
+const PHOTOCOUNT = '"ECSITE"."ANALYTICS"."CLOUD_PHOTOCOUNT_PHOTOLIST_AGG"';
 
 /** Default tenant scope until RLS is wired. */
 const DEFAULT_COMPANY_PATTERN = '%Telamon%';
@@ -307,34 +313,56 @@ async function getNodeMetrics(scope = {}) {
                SUM(sm.PHOTOS)                                               AS stage_photos
           FROM stage_media sm GROUP BY 1
       ),
-      -- Distinct photolist forms per node (DISTINCT so a form listed twice cannot
-      -- double-count its fields).
-      stage_forms AS (
-        SELECT DISTINCT NODEID, FORM_ID FROM stages
-      ),
-      -- Denominator: photo FIELDS defined for the node. element='Photo' excludes
-      -- 'Section_Header' rows, which are layout, not fields -- verified against the
-      -- portal on two nodes (165 photo + 30 headers = 195 questions).
+      /**
+       * Denominator: photo FIELDS defined for the node.
+       *
+       * Forms are enumerated from the QUESTIONS table via its own node keys, NOT
+       * from the checklist. The checklist's current SCD2 version omits forms that
+       * still hold data: for Wadley it yielded 161 fields and 530 media where the
+       * truth is 166 and 593. Same root cause as the daily-report bug.
+       *
+       * element='Photo' excludes 'Section_Header' rows, which are layout not
+       * fields. Verified exact against the portal on three nodes, where
+       * portal Total Fields + Not Applicable equals this count:
+       *   Basile 165+0, PASS CHRISTIAN 154+11, Wadley 141+25.
+       */
       photo_fields AS (
-        SELECT sf.NODEID,
+        SELECT s.NODEID,
                COUNT_IF(qi.value:element::STRING = 'Photo') AS photo_fields
-          FROM stage_forms sf
+          FROM scoped s
           JOIN ${FORM_QUESTIONS} q
-                ON q._ID = sf.FORM_ID AND NOT COALESCE(q.ISDELETED, FALSE),
+                ON (q.NODEID = s.NODEID OR ARRAY_CONTAINS(s.NODEID::VARIANT, q.NODEIDLIST))
+               AND q.TYPEOFFORM = 'photolist'
+               AND NOT COALESCE(q.ISDELETED, FALSE),
                LATERAL FLATTEN(input => q.LIST) qi
          GROUP BY 1
       ),
-      -- Numerator: photos uploaded, and how many distinct fields they cover.
+      /**
+       * Numerator. Media is matched by node only -- no form restriction -- for the
+       * same reason: filtering to checklist forms dropped 63 of Wadley's 593.
+       *
+       * photos_all counts every media row; the headline photo figure comes from
+       * the pre-aggregated PHOTOLISTENTRIES below, verified exact on three nodes.
+       * fields_covered counts DISTINCT QUESTIONID and remains approximate.
+       */
       photo_media AS (
-        SELECT sf.NODEID,
-               COUNT(m._ID)                 AS photos,
+        SELECT s.NODEID,
+               COUNT(m._ID)                 AS photos_all,
                COUNT(DISTINCT m.QUESTIONID) AS fields_covered
-          FROM stage_forms sf
+          FROM scoped s
           JOIN ${FIELD_MEDIA} m
-                ON m.FORMID = sf.FORM_ID
-               AND ARRAY_CONTAINS(sf.NODEID::VARIANT, m.NODEIDLIST)
+                ON ARRAY_CONTAINS(s.NODEID::VARIANT, m.NODEIDLIST)
                AND NOT COALESCE(m.ISDELETED, FALSE)
                AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
+         GROUP BY 1
+      ),
+      -- Photolist media count, pre-aggregated. Matches the portal's
+      -- "Total Media Count" exactly (Basile 122, PASS CHRISTIAN 554, Wadley 593).
+      -- NOTE: PHOTOENTRIES on the same table counts ALL media and overstates.
+      photo_agg AS (
+        SELECT s.NODEID, SUM(a.PHOTOLISTENTRIES) AS photos
+          FROM scoped s
+          JOIN ${PHOTOCOUNT} a ON a.NODEID = s.NODEID
          GROUP BY 1
       ),
       /**
@@ -396,7 +424,8 @@ async function getNodeMetrics(scope = {}) {
                .map((m) => `COALESCE(ms.${m.key}_total,0) AS ${m.key}_total, COALESCE(ms.${m.key}_done,0) AS ${m.key}_done`)
                .join(', ')},
              COALESCE(pf.photo_fields, 0)   AS photo_fields,
-             COALESCE(pm.photos, 0)         AS photos,
+             COALESCE(pa.photos, 0)         AS photos,
+             COALESCE(pm.photos_all, 0)     AS photos_all,
              COALESCE(pm.fields_covered, 0) AS fields_covered,
              COALESCE(r.reports, 0)     AS reports,
              COALESCE(r.report_days, 0) AS report_days,
@@ -409,6 +438,7 @@ async function getNodeMetrics(scope = {}) {
         LEFT JOIN milestones   ms ON ms.NODEID = s.NODEID
         LEFT JOIN photo_fields pf ON pf.NODEID = s.NODEID
         LEFT JOIN photo_media  pm ON pm.NODEID = s.NODEID
+        LEFT JOIN photo_agg    pa ON pa.NODEID = s.NODEID
         LEFT JOIN reports      r  ON r.NODEID  = s.NODEID
         LEFT JOIN working_days wd ON wd.NODEID = s.NODEID`;
 
@@ -457,16 +487,22 @@ async function getNodeMetrics(scope = {}) {
          * NOT photos/fields: a field accepts many photos, so that ratio exceeds
          * 100% (PASS CHRISTIAN uploads 554 photos across 154 fields = 360%).
          *
-         * `fieldsCovered` counts DISTINCT media QUESTIONID. Cross-checked against
-         * the portal's "fields without media": within 1 on one node (108 vs 109)
-         * but 5 out on another (11 vs 16), so the PERCENTAGE IS APPROXIMATE. The
-         * exact field<->media link is not reproducible from the columns
-         * available -- media.QUESTIONID does not match question _ids. `photos`
-         * and `photoFields` are both verified exact against the portal, so they
-         * are exposed separately for anyone who needs a defensible figure.
+         * photoFields and photos are both VERIFIED EXACT against the portal on
+         * three nodes (Basile 165/122, PASS CHRISTIAN 165/554, Wadley 166/593).
+         *
+         * fieldsCovered counts DISTINCT media QUESTIONID and is APPROXIMATE --
+         * 105 vs the portal's 103 on Wadley, 108 vs 109 on PASS CHRISTIAN. The
+         * exact field<->media link is not reproducible: media.QUESTIONID holds
+         * answer-level GUIDs that do not match question _ids. So the percentage
+         * is indicative; the two exact counts are exposed alongside it.
+         *
+         * The percentage also runs LOW because the denominator cannot exclude
+         * N/A fields (25 on Wadley, 11 on PASS CHRISTIAN) -- no N/A flag has been
+         * found in any table.
          */
         photoFields: Number(row.PHOTO_FIELDS) || 0,
         photos: Number(row.PHOTOS) || 0,
+        photosAllMedia: Number(row.PHOTOS_ALL) || 0,
         fieldsCovered: Number(row.FIELDS_COVERED) || 0,
         photoPct:
           Number(row.PHOTO_FIELDS) > 0

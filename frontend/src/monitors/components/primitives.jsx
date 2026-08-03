@@ -198,10 +198,10 @@ export function NoDataCell({ hint }) {
   );
 }
 
-export function ProgressCell({ done, total, pct, color }) {
+export function ProgressCell({ done, total, pct, color, note, title }) {
   if (pct === null || pct === undefined) return <NoDataCell hint="Photo counts: source not yet identified" />;
   return (
-    <div className="mon-progress">
+    <div className="mon-progress" title={title}>
       <div className="mon-progress-nums">
         <span className="mon-progress-done">
           {done}
@@ -214,6 +214,7 @@ export function ProgressCell({ done, total, pct, color }) {
       <div className="mon-progress-track">
         <div className="mon-progress-fill" style={{ width: `${pct}%`, background: color }} />
       </div>
+      {note ? <p className="mon-progress-note">{note}</p> : null}
     </div>
   );
 }

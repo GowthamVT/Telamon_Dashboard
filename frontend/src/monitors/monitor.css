@@ -967,3 +967,12 @@
   font-variant-numeric: tabular-nums;
   cursor: help;
 }
+
+/* Exact photo count under the coverage bar. The bar's percentage is indicative
+   (approximate numerator); this number is verified against the portal. */
+.mon-progress-note {
+  font-size: 10.5px;
+  color: var(--mon-dim);
+  margin: 4px 0 0;
+  font-variant-numeric: tabular-nums;
+}
