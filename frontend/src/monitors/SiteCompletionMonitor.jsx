@@ -28,50 +28,73 @@ const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 /** Grey track for an unmeasurable value -- visually distinct from 0%, which is red. */
 const EMPTY_TRACK = '#2A3142';
 
-/** Stage-table filters. A stage counts as Started once any photo exists against it. */
-const STAGE_FILTERS = ['All', 'Started', 'Not started', 'Unmapped'];
-const STAGE_SORTS = ['Milestone order', 'Photos', 'Name'];
+/**
+ * Checklist filters. "Extra" means the form exists on the node but is absent from
+ * its CLOUD_FORMGOUP_SS checklist -- worth surfacing rather than hiding: Wadley's
+ * DAILY REPORT FORM, with 31 submissions, is one of those.
+ */
+const ITEM_FILTERS = ['All', 'Complete', 'Incomplete', 'Extra'];
+const ITEM_SORTS = ['Checklist order', 'Milestone order', 'Evidence', 'Name'];
 
 /** m1 < m2 < m3 < m4 < unmapped, so unmapped stages read as an appendix. */
 function milestoneRank(key) {
   return key ? Number(String(key).replace(/[^0-9]/g, '')) || 99 : 99;
 }
 
+/** How each checklist item type shows completion, and what evidence to name. */
+const KIND_LABEL = {
+  photolist: 'photo list',
+  ondemand: 'form',
+  installTracker: 'tracker',
+  single: 'form',
+};
+
 /**
- * One checklist stage of the node's photolist template.
+ * One item of the node's checklist (CLOUD_FORMGOUP_SS.LIST).
  *
- * "Started" is the only completion signal available: a stage has photos or it
- * does not. There is no per-stage sign-off column anywhere in the warehouse, so
- * this deliberately does not claim a stage is *finished*.
+ * Completion is EVIDENCE-BASED and says so: a photo list is done when photos
+ * exist, a form when a submission exists. No table in the warehouse carries a
+ * per-item sign-off, so nothing here claims approval.
  */
-function StageRow({ stage }) {
-  const started = stage.photos > 0;
-  const color = stage.milestone ? (started ? '#34E0A1' : '#5A6478') : '#9098A9';
-  const Icon = stage.milestone ? (started ? CircleCheck : Circle) : CircleMinus;
+function ChecklistRow({ item }) {
+  const isPhotos = item.kind === 'photolist';
+  const color = item.done ? '#34E0A1' : item.inChecklist ? '#5A6478' : '#9098A9';
+  const Icon = item.done ? CircleCheck : item.inChecklist ? Circle : CircleMinus;
+
   const detail = [
-    stage.photoFields + ' photo field' + (stage.photoFields === 1 ? '' : 's'),
-    stage.lastPhoto ? 'last photo ' + stage.lastPhoto : null,
-    stage.milestone ? null : 'not part of a milestone',
+    item.section,
+    KIND_LABEL[item.kind] || item.kind,
+    isPhotos && item.photoFields
+      ? `${item.photoFields} photo field${item.photoFields === 1 ? '' : 's'}`
+      : null,
+    item.lastPhoto ? `last photo ${item.lastPhoto}` : null,
+    !isPhotos && item.lastSubmission ? `last ${item.lastSubmission}` : null,
+    item.inChecklist ? null : 'not in the node checklist',
   ]
     .filter(Boolean)
     .join(' \u2014 ');
 
+  const evidence = isPhotos
+    ? item.photos > 0
+      ? `${item.photos} photos`
+      : 'No photos'
+    : item.submissions > 0
+      ? `${item.submissions} submission${item.submissions === 1 ? '' : 's'}`
+      : 'None';
+
   return (
     <div className="mon-grid mon-trow mon-trow--tight" role="row">
-      <span className="mon-chip">{stage.milestone ? stage.milestone.toUpperCase() : '--'}</span>
+      <span className="mon-chip">{item.milestone ? item.milestone.toUpperCase() : '--'}</span>
       <div className="mon-doc">
-        <p className="mon-doc-label">{stage.stage}</p>
+        <p className="mon-doc-label">
+          {item.position ? `${item.position}. ` : ''}
+          {item.name}
+        </p>
         <p className="mon-doc-sub">{detail}</p>
       </div>
       <div className="mon-docstatus" style={{ color }}>
         <Icon size={16} aria-hidden="true" />
-        <span>
-          {started
-            ? stage.photos + ' photos'
-            : stage.milestone
-              ? 'Not started'
-              : 'N/A'}
-        </span>
+        <span>{evidence}</span>
       </div>
     </div>
   );
@@ -149,7 +172,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    * than 0%, so a node is never shown as behind on something unmeasurable.
    */
   const liveMs = live?.metrics || null;
-  const stages = live?.stages || null;
+  const checklist = live?.checklist || null;
 
   const milestoneView = useMemo(() => {
     if (!liveMs) return null;
@@ -172,30 +195,42 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     };
   }, [liveMs]);
 
-  /** Stage rows for the table, driven by the same filter controls as the mock list. */
-  const visibleStages = useMemo(() => {
-    if (!stages) return null;
+  /** Checklist rows for the table, driven by the filter controls above it. */
+  const visibleItems = useMemo(() => {
+    if (!checklist) return null;
     const q = query.trim().toLowerCase();
-    let out = stages.filter((st) => {
-      if (q && !st.stage.toLowerCase().includes(q)) return false;
-      if (status === 'Started' && st.photos === 0) return false;
-      if (status === 'Not started' && !(st.milestone && st.photos === 0)) return false;
-      if (status === 'Unmapped' && st.milestone) return false;
-      if (milestone !== 'All milestones' && (st.milestone || '').toUpperCase() !== milestone) {
+    const evidenceOf = (it) => (it.kind === 'photolist' ? it.photos : it.submissions);
+
+    let out = checklist.filter((it) => {
+      if (q && !it.name.toLowerCase().includes(q)) return false;
+      if (status === 'Complete' && !it.done) return false;
+      if (status === 'Incomplete' && it.done) return false;
+      if (status === 'Extra' && it.inChecklist) return false;
+      if (milestone !== 'All milestones' && (it.milestone || '').toUpperCase() !== milestone) {
         return false;
       }
       return true;
     });
 
-    if (sort === 'Photos') out = [...out].sort((a, b) => b.photos - a.photos);
-    else if (sort === 'Name') out = [...out].sort((a, b) => a.stage.localeCompare(b.stage));
-    else {
+    if (sort === 'Evidence') out = [...out].sort((a, b) => evidenceOf(b) - evidenceOf(a));
+    else if (sort === 'Name') out = [...out].sort((a, b) => a.name.localeCompare(b.name));
+    else if (sort === 'Milestone order') {
       out = [...out].sort(
-        (a, b) => milestoneRank(a.milestone) - milestoneRank(b.milestone) || b.photos - a.photos
+        (a, b) =>
+          milestoneRank(a.milestone) - milestoneRank(b.milestone) ||
+          (a.sequence ?? 999) - (b.sequence ?? 999)
+      );
+    } else {
+      // Checklist order: the node's own sequence, with the extra forms after it.
+      out = [...out].sort(
+        (a, b) =>
+          Number(b.inChecklist) - Number(a.inChecklist) ||
+          (a.sequence ?? 999) - (b.sequence ?? 999) ||
+          a.name.localeCompare(b.name)
       );
     }
     return out;
-  }, [stages, query, status, milestone, sort]);
+  }, [checklist, query, status, milestone, sort]);
 
   /**
    * Photo coverage bar.
@@ -486,7 +521,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           icon={<Search size={15} color="#5A6478" aria-hidden="true" />}
         />
         <PillGroup
-          options={stages ? STAGE_FILTERS : STATUS_FILTERS}
+          options={checklist ? ITEM_FILTERS : STATUS_FILTERS}
           value={status}
           onChange={setStatus}
           label="Filter by status"
@@ -495,8 +530,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <Select
           value={sort}
           onChange={setSort}
-          options={stages ? STAGE_SORTS : SORT_OPTIONS}
-          label={stages ? 'Sort stages by' : 'Sort documents by'}
+          options={checklist ? ITEM_SORTS : SORT_OPTIONS}
+          label={checklist ? 'Sort checklist by' : 'Sort documents by'}
         />
       </div>
 
@@ -506,27 +541,30 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <div className="mon-table-scroll" style={{ '--mon-cols': COLS, '--mon-min': '640px' }}>
           <div className="mon-grid mon-thead" role="row">
             <div role="columnheader">MILESTONE</div>
-            <div role="columnheader">{visibleStages ? 'STAGE' : 'DOCUMENT'}</div>
-            <div role="columnheader">{visibleStages ? 'PHOTOS' : 'STATUS'}</div>
+            <div role="columnheader">{visibleItems ? 'CHECKLIST ITEM' : 'DOCUMENT'}</div>
+            <div role="columnheader">{visibleItems ? 'EVIDENCE' : 'STATUS'}</div>
           </div>
 
-          {visibleStages
-            ? visibleStages.map((st) => <StageRow key={st.stage} stage={st} />)
+          {visibleItems
+            ? visibleItems.map((it) => <ChecklistRow key={it.formId} item={it} />)
             : visible.map((item) => <DocumentRow key={item.id} item={item} />)}
 
-          {(visibleStages || visible).length === 0 ? (
+          {(visibleItems || visible).length === 0 ? (
             <div className="mon-empty-row">
-              No {visibleStages ? 'stages' : 'documents'} match your filters.
+              No {visibleItems ? 'checklist items' : 'documents'} match your filters.
             </div>
           ) : null}
         </div>
       </div>
 
       <p className="mon-foot">
-        {visibleStages ? (
+        {visibleItems ? (
           <>
-            {visibleStages.length} of {stages.length} checklist stages shown · a stage counts as
-            started once any photo is uploaded against it
+            {visibleItems.length} of {checklist.length} checklist items shown ·{' '}
+            {checklist.filter((i) => i.inChecklist).length} defined in this node&rsquo;s checklist,{' '}
+            {checklist.filter((i) => !i.inChecklist).length} additional forms found on the node ·
+            complete means evidence exists (photos for a photo list, a submission for a form), not
+            sign-off
           </>
         ) : (
           <>

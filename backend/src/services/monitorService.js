@@ -600,6 +600,171 @@ async function getNodeStages(scope = {}) {
 }
 
 /**
+ * The node's CHECKLIST -- what the Site Monitor's table is meant to show.
+ *
+ * Source is CLOUD_FORMGOUP_SS.LIST, the per-node checklist definition. Each
+ * element is one required item, carrying:
+ *   text        -> the item name shown to the crew ("Permitting", "COP-Documents")
+ *   typeOfForm  -> photolist | ondemand | installTracker (drives how it completes)
+ *   formId      -> joins to FORMBUILDERQUESTIONS._ID, FIELDMEDIA.FORMID, ANSWERS.FORMID
+ *   customTags  -> "level 0" (e.g. COP MEDIA), "level 1" (the stage), "position"
+ *
+ * SCD2: three versions exist per node with LIST lengths 14/15/18, so
+ * DBT_VALID_TO IS NULL is mandatory or items appear two or three times.
+ *
+ * customTags must be flattened as a SECOND lateral, not a correlated subquery --
+ * Snowflake rejects a correlated LATERAL FLATTEN ("Unsupported subquery type").
+ * OUTER => TRUE keeps the untagged items (COP-Documents, the tracker), which
+ * would otherwise vanish from the checklist entirely.
+ *
+ * The checklist is NOT the full picture: Wadley's has 14 items but the node also
+ * carries a Concrete Foundation photolist and a DAILY REPORT FORM that are absent
+ * from it -- the same omission that made daily reports read 0 before. So forms
+ * that exist on the node but are missing from the checklist are unioned in and
+ * flagged `inChecklist: false`, rather than being silently dropped.
+ *
+ * Kept separate from getNodeStages so the milestone card keeps its validated
+ * numbers and the Route Monitor's code path is untouched.
+ */
+async function getNodeChecklist(scope = {}) {
+  return cache.wrap('monitor-node-checklist', scope, async () => {
+    const where = buildScope(scope, { withNode: true });
+    const sql = `
+      WITH scoped AS (
+        SELECT "nodeId" AS NODEID FROM ${NODE} ${where.sql}
+      ),
+      checklist AS (
+        SELECT s.NODEID,
+               li.value:sequence::NUMBER AS SEQ,
+               li.value:text::STRING AS ITEM_NAME,
+               li.value:typeOfForm::STRING AS TYPE_OF_FORM,
+               li.value:formId::STRING AS FORM_ID,
+               MAX(IFF(ct.value:tagType::STRING = 'level 0',
+                       ct.value:tagValues[0]::STRING, NULL)) AS LEVEL_0,
+               MAX(IFF(ct.value:tagType::STRING = 'level 1',
+                       ct.value:tagValues[0]::STRING, NULL)) AS LEVEL_1,
+               MAX(IFF(ct.value:tagType::STRING = 'position',
+                       ct.value:tagValues[0]::STRING, NULL)) AS POSITION
+          FROM scoped s
+          JOIN ${FORMGROUP} fg
+                ON ARRAY_CONTAINS(s.NODEID::VARIANT, fg.NODEIDLIST)
+               AND fg.DBT_VALID_TO IS NULL
+               AND NOT COALESCE(fg.ISDELETED, FALSE),
+               LATERAL FLATTEN(input => fg.LIST) li,
+               LATERAL FLATTEN(input => li.value:customTags, OUTER => TRUE) ct
+         WHERE NOT COALESCE(li.value:isDeleted::BOOLEAN, FALSE)
+         GROUP BY 1, 2, 3, 4, 5
+      ),
+      /* Forms present on the node but absent from its checklist. */
+      extra AS (
+        SELECT s.NODEID, NULL AS SEQ, q.FORMNAME AS ITEM_NAME,
+               q.TYPEOFFORM AS TYPE_OF_FORM, q._ID AS FORM_ID,
+               NULL AS LEVEL_0, NULL AS LEVEL_1, NULL AS POSITION
+          FROM scoped s
+          JOIN ${FORM_QUESTIONS} q
+                ON (q.NODEID = s.NODEID OR ARRAY_CONTAINS(s.NODEID::VARIANT, q.NODEIDLIST))
+               AND NOT COALESCE(q.ISDELETED, FALSE)
+          LEFT JOIN checklist c ON c.NODEID = s.NODEID AND c.FORM_ID = q._ID
+         WHERE c.FORM_ID IS NULL
+      ),
+      items AS (
+        SELECT *, TRUE AS IN_CHECKLIST FROM checklist
+        UNION ALL
+        SELECT *, FALSE AS IN_CHECKLIST FROM extra
+      ),
+      /* How many photo fields the form defines (element='Photo' in its LIST). */
+      fields AS (
+        SELECT i.NODEID, i.FORM_ID,
+               COUNT_IF(qi.value:element::STRING = 'Photo') AS PHOTO_FIELDS
+          FROM items i
+          JOIN ${FORM_QUESTIONS} q ON q._ID = i.FORM_ID,
+               LATERAL FLATTEN(input => q.LIST) qi
+         GROUP BY 1, 2
+      ),
+      /* Photos. Match the node on NODEIDLIST -- the scalar NODEID is mostly NULL. */
+      media AS (
+        SELECT i.NODEID, i.FORM_ID,
+               COUNT(m._ID) AS PHOTOS,
+               TO_VARCHAR(MAX(TO_DATE(m.CREATEDAT)), 'YYYY-MM-DD') AS LAST_PHOTO
+          FROM items i
+          JOIN ${FIELD_MEDIA} m
+                ON m.FORMID = i.FORM_ID
+               AND ARRAY_CONTAINS(i.NODEID::VARIANT, m.NODEIDLIST)
+               AND NOT COALESCE(m.ISDELETED, FALSE)
+               AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
+         GROUP BY 1, 2
+      ),
+      /* Submissions, for the ondemand / installTracker items. */
+      answers AS (
+        SELECT i.NODEID, i.FORM_ID,
+               COUNT(a._ID) AS SUBMISSIONS,
+               TO_VARCHAR(MAX(TO_DATE(a.CREATEDAT)), 'YYYY-MM-DD') AS LAST_SUBMISSION
+          FROM items i
+          JOIN ${FORM_ANSWERS} a
+                ON a.FORMID = i.FORM_ID
+               AND ARRAY_CONTAINS(i.NODEID::VARIANT, a.NODEIDLIST)
+               AND NOT COALESCE(a.ISDELETED, FALSE)
+               AND NOT COALESCE(a.__HEVO__MARKED_DELETED, FALSE)
+         GROUP BY 1, 2
+      )
+      SELECT i.NODEID, i.SEQ, i.ITEM_NAME, i.TYPE_OF_FORM, i.FORM_ID,
+             i.LEVEL_0, i.LEVEL_1, i.POSITION, i.IN_CHECKLIST,
+             COALESCE(f.PHOTO_FIELDS, 0) AS PHOTO_FIELDS,
+             COALESCE(md.PHOTOS, 0) AS PHOTOS,
+             md.LAST_PHOTO,
+             COALESCE(an.SUBMISSIONS, 0) AS SUBMISSIONS,
+             an.LAST_SUBMISSION
+        FROM items i
+        LEFT JOIN fields f ON f.NODEID = i.NODEID AND f.FORM_ID = i.FORM_ID
+        LEFT JOIN media md ON md.NODEID = i.NODEID AND md.FORM_ID = i.FORM_ID
+        LEFT JOIN answers an ON an.NODEID = i.NODEID AND an.FORM_ID = i.FORM_ID
+       ORDER BY i.NODEID, i.IN_CHECKLIST DESC, i.SEQ NULLS LAST, i.ITEM_NAME`;
+
+    const { rows, elapsedMs } = await sf.query(sql, where.binds, {
+      label: 'monitor-node-checklist',
+    });
+
+    const byNode = {};
+    for (const row of rows) {
+      if (!byNode[row.NODEID]) byNode[row.NODEID] = [];
+      const kind = row.TYPE_OF_FORM || 'unknown';
+      const photos = Number(row.PHOTOS) || 0;
+      const submissions = Number(row.SUBMISSIONS) || 0;
+
+      /*
+       * Completion signal depends on the item type. There is no sign-off column
+       * anywhere, so "done" means evidence exists -- photos for a photolist,
+       * submissions for a form -- and nothing stronger is claimed.
+       */
+      const done = kind === 'photolist' ? photos > 0 : submissions > 0;
+
+      byNode[row.NODEID].push({
+        name: row.ITEM_NAME,
+        kind,
+        formId: row.FORM_ID,
+        sequence: row.SEQ === null || row.SEQ === undefined ? null : Number(row.SEQ),
+        // "position" is the client's own ordering and can differ from sequence
+        // (Wadley's Shelter Placement is sequence 6, position 7).
+        position: row.POSITION || null,
+        section: row.LEVEL_0 || null,
+        stage: row.LEVEL_1 || null,
+        // Classify from the level-1 tag, falling back to the item name.
+        milestone: classifyStage(row.LEVEL_1 || row.ITEM_NAME),
+        photoFields: Number(row.PHOTO_FIELDS) || 0,
+        photos,
+        lastPhoto: row.LAST_PHOTO || null,
+        submissions,
+        lastSubmission: row.LAST_SUBMISSION || null,
+        inChecklist: row.IN_CHECKLIST === true || row.IN_CHECKLIST === 'true',
+        done,
+      });
+    }
+
+    return { byNode, elapsedMs };
+  });
+}
+
+/**
  * The Company > Site > Node hierarchy, built from the id keys.
  *
  * One query, nested in JS rather than three round trips: CLOUD_NODE already
@@ -793,11 +958,17 @@ async function getSiteMonitor(scope = {}) {
    */
   let metrics = null;
   let stages = null;
+  let checklist = null;
   if (selected) {
     const nodeScope = { ...companyScopeOf(scope), nodeId: selected.nodeId };
-    const [m, s] = await Promise.all([getNodeMetrics(nodeScope), getNodeStages(nodeScope)]);
+    const [m, s, c] = await Promise.all([
+      getNodeMetrics(nodeScope),
+      getNodeStages(nodeScope),
+      getNodeChecklist(nodeScope),
+    ]);
     metrics = m.byNode[selected.nodeId] || null;
     stages = s.byNode[selected.nodeId] || [];
+    checklist = c.byNode[selected.nodeId] || [];
   }
 
   return {
@@ -817,6 +988,7 @@ async function getSiteMonitor(scope = {}) {
     statusCounts,
     metrics,
     stages,
+    checklist,
     /** Milestone definitions, so the UI can label bars without duplicating config. */
     milestoneDefs: MILESTONES.map((m) => ({
       key: m.key,
@@ -838,6 +1010,7 @@ module.exports = {
   getHierarchy,
   getNodeMetrics,
   getNodeStages,
+  getNodeChecklist,
   listRoutes,
   listNodes,
   getRouteMonitor,
