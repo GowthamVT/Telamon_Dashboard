@@ -90,10 +90,12 @@ export default function MonitorApp({ initialView = 'site' }) {
           <div>
             <strong>Partially live</strong>
             <span style={{ color: '#34E0A1' }}>LIVE:</span> header names, start date, company, the
-            Company&nbsp;›&nbsp;Site&nbsp;›&nbsp;Node hierarchy, and the status KPI (company-level —
-            it does not shrink as you drill).{' '}
-            <span style={{ color: '#F5B133' }}>Sample data:</span> photos, daily reports, milestones
-            and the document checklist — still need source tables.
+            Company&nbsp;›&nbsp;Site&nbsp;›&nbsp;Node hierarchy, the status KPI (company-level — it
+            does not shrink as you drill), photo fields and counts, daily reports, missed report
+            days, and milestones M2&ndash;M4 with their checklist stages.{' '}
+            <span style={{ color: '#F5B133' }}>Not sourced:</span> M1 CD&nbsp;Drawings and the
+            document checklist (<code>CLOUD_ECSITE_S3DOCUMENT</code> is empty), the N/A field flag,
+            and the M1&ndash;M4 mapping for nodes on non-standard checklist templates.
           </div>
         </div>
       )}

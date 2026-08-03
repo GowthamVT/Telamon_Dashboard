@@ -15,7 +15,12 @@
  */
 const sf = require('../db/snowflake');
 const cache = require('../cache/queryCache');
-const { MILESTONES, MAPPED_STAGES, MIN_MAPPED_STAGES } = require('../config/milestones');
+const {
+  MILESTONES,
+  MAPPED_STAGES,
+  MIN_MAPPED_STAGES,
+  classifyStage,
+} = require('../config/milestones');
 
 const NODE = '"ECSITE"."ANALYTICS"."CLOUD_NODE"';
 const SITE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS"';
@@ -517,6 +522,84 @@ async function getNodeMetrics(scope = {}) {
 }
 
 /**
+ * Per-stage detail for the Site Monitor, with each stage's milestone assignment.
+ *
+ * Separate from getNodeMetrics() on purpose: the Site Monitor shows ONE node and
+ * wants stage-level rows, whereas the Route Monitor shows many nodes and only
+ * needs the rolled-up percentages. Keeping them apart means this cannot change
+ * anything the Route Monitor renders.
+ *
+ * Forms are read from the QUESTIONS table via its own node keys, not the
+ * checklist -- the checklist's current version omits forms that still hold data
+ * (it cost Wadley 5 fields and 63 photos).
+ */
+async function getNodeStages(scope = {}) {
+  return cache.wrap('monitor-node-stages', scope, async () => {
+    const where = buildScope(scope, { withNode: true });
+
+    const sql = `
+      WITH scoped AS (
+        SELECT "nodeId" AS NODEID FROM ${NODE} ${where.sql}
+      ),
+      stage_forms AS (
+        SELECT s.NODEID, q._ID AS FORM_ID, q.FORMNAME AS stage_name
+          FROM scoped s
+          JOIN ${FORM_QUESTIONS} q
+                ON (q.NODEID = s.NODEID OR ARRAY_CONTAINS(s.NODEID::VARIANT, q.NODEIDLIST))
+               AND q.TYPEOFFORM = 'photolist'
+               AND NOT COALESCE(q.ISDELETED, FALSE)
+      ),
+      fields AS (
+        SELECT sf.NODEID, sf.FORM_ID, sf.stage_name,
+               COUNT_IF(qi.value:element::STRING = 'Photo') AS photo_fields
+          FROM stage_forms sf
+          JOIN ${FORM_QUESTIONS} q ON q._ID = sf.FORM_ID,
+               LATERAL FLATTEN(input => q.LIST) qi
+         GROUP BY 1, 2, 3
+      ),
+      media AS (
+        SELECT sf.NODEID, sf.FORM_ID,
+               COUNT(m._ID)                          AS photos,
+               COUNT(DISTINCT m.QUESTIONID)          AS fields_covered,
+               TO_VARCHAR(MAX(TO_DATE(m.CREATEDAT)), 'YYYY-MM-DD') AS last_photo
+          FROM stage_forms sf
+          LEFT JOIN ${FIELD_MEDIA} m
+                 ON m.FORMID = sf.FORM_ID
+                AND ARRAY_CONTAINS(sf.NODEID::VARIANT, m.NODEIDLIST)
+                AND NOT COALESCE(m.ISDELETED, FALSE)
+                AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
+         GROUP BY 1, 2
+      )
+      SELECT f.NODEID, f.stage_name, f.photo_fields,
+             COALESCE(md.photos, 0)         AS photos,
+             COALESCE(md.fields_covered, 0) AS fields_covered,
+             md.last_photo
+        FROM fields f
+        LEFT JOIN media md ON md.NODEID = f.NODEID AND md.FORM_ID = f.FORM_ID
+       ORDER BY f.NODEID, COALESCE(md.photos, 0) DESC, f.stage_name`;
+
+    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-node-stages' });
+
+    const byNode = {};
+    for (const row of rows) {
+      if (!byNode[row.NODEID]) byNode[row.NODEID] = [];
+      byNode[row.NODEID].push({
+        stage: row.STAGE_NAME,
+        // null when the stage name is not in the M1-M4 mapping (other templates).
+        milestone: classifyStage(row.STAGE_NAME),
+        photoFields: Number(row.PHOTO_FIELDS) || 0,
+        photos: Number(row.PHOTOS) || 0,
+        fieldsCovered: Number(row.FIELDS_COVERED) || 0,
+        lastPhoto: row.LAST_PHOTO || null,
+        started: (Number(row.PHOTOS) || 0) > 0,
+      });
+    }
+
+    return { byNode, elapsedMs };
+  });
+}
+
+/**
  * The Company > Site > Node hierarchy, built from the id keys.
  *
  * One query, nested in JS rather than three round trips: CLOUD_NODE already
@@ -701,6 +784,22 @@ async function getSiteMonitor(scope = {}) {
     ? nodes.nodes.find((n) => n.nodeId === scope.nodeId)
     : nodes.nodes[0];
 
+  /**
+   * Milestone and stage detail for the ONE node on display.
+   *
+   * Re-scoped to that node rather than reusing the incoming scope: without a
+   * nodeId the scope could span a whole company, and computing stage rows for
+   * 200 nodes to render one would be wasteful.
+   */
+  let metrics = null;
+  let stages = null;
+  if (selected) {
+    const nodeScope = { ...companyScopeOf(scope), nodeId: selected.nodeId };
+    const [m, s] = await Promise.all([getNodeMetrics(nodeScope), getNodeStages(nodeScope)]);
+    metrics = m.byNode[selected.nodeId] || null;
+    stages = s.byNode[selected.nodeId] || [];
+  }
+
   return {
     site: selected
       ? {
@@ -716,6 +815,17 @@ async function getSiteMonitor(scope = {}) {
       : null,
     nodeCount: nodes.nodes.length,
     statusCounts,
+    metrics,
+    stages,
+    /** Milestone definitions, so the UI can label bars without duplicating config. */
+    milestoneDefs: MILESTONES.map((m) => ({
+      key: m.key,
+      label: m.label,
+      name: m.name,
+      stageCount: m.stages.length,
+      unmeasurable: m.unmeasurable === true,
+      reason: m.unmeasurableReason || null,
+    })),
   };
 }
 
@@ -727,6 +837,7 @@ module.exports = {
   getStatusCounts,
   getHierarchy,
   getNodeMetrics,
+  getNodeStages,
   listRoutes,
   listNodes,
   getRouteMonitor,
