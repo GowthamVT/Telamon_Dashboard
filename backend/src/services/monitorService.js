@@ -968,18 +968,40 @@ async function listNodes(scope = {}) {
 async function getRouteMonitor(scope = {}) {
   const [routes, statusCounts] = await Promise.all([listRoutes(scope), getStatusCounts(scope)]);
 
-  const selected = scope.siteId
-    ? routes.routes.find((r) => r.siteId === scope.siteId)
-    : routes.routes[0];
+  /*
+   * AGGREGATE vs SINGLE ROUTE.
+   *
+   * Without a siteId the scope spans every route, so there is no single route to
+   * name. Falling back to routes[0] used to put an arbitrary route's name in the
+   * header while the picker said "All sites" -- two different claims on one
+   * screen. `name` is therefore null when aggregate, so no code path can display
+   * one route's name as if it described the whole selection.
+   */
+  const aggregate = !scope.siteId;
+  const selected = aggregate
+    ? routes.routes[0]
+    : routes.routes.find((r) => r.siteId === scope.siteId);
 
   // Table rows: the nodes in scope, plus their milestone/report metrics. Fetched
   // here rather than by separate client calls so the header, KPI and rows are
   // always the same slice of data.
   const [nodes, metrics] = await Promise.all([listNodes(scope), getNodeMetrics(scope)]);
 
+  // Distinct companies actually in scope -- "All Telamon (4)" spans four.
+  const companies = new Set(nodes.nodes.map((n) => n.companyName).filter(Boolean));
+
   return {
     route: selected
-      ? { siteId: selected.siteId, name: selected.routeName, companyName: selected.companyName, nodeCount: selected.nodeCount }
+      ? {
+          siteId: aggregate ? null : selected.siteId,
+          name: aggregate ? null : selected.routeName,
+          aggregate,
+          routeCount: routes.routes.length,
+          // Counted from the rows in scope, so the header agrees with the table.
+          nodeCount: aggregate ? nodes.nodes.length : selected.nodeCount,
+          companyName: companies.size === 1 ? [...companies][0] : null,
+          companyCount: companies.size,
+        }
       : null,
     routes: routes.routes,
     nodes: nodes.nodes.map((n) => ({ ...n, metrics: metrics.byNode[n.nodeId] || null })),
@@ -994,9 +1016,19 @@ async function getRouteMonitor(scope = {}) {
 async function getSiteMonitor(scope = {}) {
   const [nodes, statusCounts] = await Promise.all([listNodes(scope), getStatusCounts(scope)]);
 
-  const selected = scope.nodeId
-    ? nodes.nodes.find((n) => n.nodeId === scope.nodeId)
-    : nodes.nodes[0];
+  /*
+   * AGGREGATE vs SINGLE NODE -- same reasoning as getRouteMonitor.
+   *
+   * The Site Monitor is a node-level view, so the cards below the header always
+   * describe ONE node. When no node is picked we still show the first one (that
+   * is the existing behaviour), but `name` is null so the header cannot claim to
+   * BE that node; `detailName` names it explicitly instead, and the UI attributes
+   * the cards to it.
+   */
+  const aggregate = !scope.nodeId;
+  const selected = aggregate
+    ? nodes.nodes[0]
+    : nodes.nodes.find((n) => n.nodeId === scope.nodeId);
 
   /**
    * Milestone and stage detail for the ONE node on display.
@@ -1005,6 +1037,15 @@ async function getSiteMonitor(scope = {}) {
    * nodeId the scope could span a whole company, and computing stage rows for
    * 200 nodes to render one would be wasteful.
    */
+  const routeNames = new Set(nodes.nodes.map((n) => n.routeName).filter(Boolean));
+  /*
+   * Count sites by siteId, not by route NAME: two sites share the name
+   * LUMEN-ILA-LOUISVILLE_NASHVILLE, so counting names gives 61 where the picker
+   * says 62 and the two figures contradict each other on screen.
+   */
+  const siteIds = new Set(nodes.nodes.map((n) => n.siteId).filter(Boolean));
+  const companies = new Set(nodes.nodes.map((n) => n.companyName).filter(Boolean));
+
   let metrics = null;
   let stages = null;
   let checklist = null;
@@ -1025,9 +1066,16 @@ async function getSiteMonitor(scope = {}) {
       ? {
           nodeId: selected.nodeId,
           siteId: selected.siteId,
-          name: selected.nodeName,
-          route: selected.routeName,
-          companyName: selected.companyName,
+          name: aggregate ? null : selected.nodeName,
+          /** The node the detail cards describe -- set even when aggregating. */
+          detailName: selected.nodeName,
+          aggregate,
+          // Null when the scope spans more than one route, so the ROUTE card
+          // never names one route while showing many.
+          route: aggregate && routeNames.size > 1 ? null : selected.routeName,
+          routeCount: siteIds.size,
+          companyName: companies.size === 1 ? [...companies][0] : null,
+          companyCount: companies.size,
           start: selected.startDate,
           workStatus: selected.workStatus,
           recordStatus: selected.recordStatus,

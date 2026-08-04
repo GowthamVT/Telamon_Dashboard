@@ -70,16 +70,27 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     [rows]
   );
 
-  // Live values win where they exist; sample data fills the rest.
-  const routeName = live?.route?.name || data.route.name;
+  /*
+   * Header label. When the picker is on "All sites" there is no single route to
+   * name, so the title says so rather than naming whichever route came back
+   * first -- the backend sends name:null in that case.
+   */
+  const isAggregate = live?.route?.aggregate === true;
+  const routeName = isAggregate ? 'ALL SITES' : live?.route?.name || data.route.name;
   const kpi = live?.statusCounts || null;
   const complete = kpi ? kpi.complete : summary.complete;
   const inProgress = kpi ? kpi.inProgress : summary.inProgress;
   const yetToStart = kpi ? kpi.yetToStart : summary.yetToStart;
   const kpiTotal = kpi ? kpi.total : summary.total;
 
+  const companyLabel = live?.route
+    ? live.route.companyName || `${live.route.companyCount} companies`
+    : null;
+
   const subtitle = live?.route
-    ? `${live.route.nodeCount} nodes · ${live.route.companyName}`
+    ? isAggregate
+      ? `${live.route.routeCount} sites · ${live.route.nodeCount} nodes · ${companyLabel}`
+      : `${live.route.nodeCount} nodes · ${companyLabel}`
     : `${summary.total} sites`;
 
   const scopeNote = describeStatusScope(kpi);

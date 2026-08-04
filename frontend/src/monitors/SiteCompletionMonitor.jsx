@@ -164,9 +164,16 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
 
   const overallStatus = siteStatus(summary);
 
-  // Live values win where they exist; sample data fills the rest.
-  const siteName = live?.site?.name || data.site.name;
-  const routeName = live?.site?.route || data.site.route;
+  /*
+   * Header label. With no node picked the scope spans many, so the title says
+   * "ALL SITES" instead of naming whichever node came back first. The cards
+   * below still describe one node -- `detailName` -- and the subtitle says which.
+   */
+  const isAggregate = live?.site?.aggregate === true;
+  const siteName = isAggregate ? 'ALL SITES' : live?.site?.name || data.site.name;
+  const routeName =
+    live?.site?.route ||
+    (isAggregate && live?.site ? `All routes (${live.site.routeCount})` : data.site.route);
   const startDate = live?.site?.start || data.site.start;
   const kpi = live?.statusCounts || null;
   const scopeNote = describeStatusScope(kpi);
@@ -317,7 +324,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         title={siteName.toUpperCase()}
         subtitle={
           live?.site
-            ? `Started ${startDate} · ${live.site.companyName} · node status ${live.site.nodeStatus}`
+            ? isAggregate
+              ? `${live.nodeCount} sites · ${
+                  live.site.companyName || `${live.site.companyCount} companies`
+                } · detail below is for ${live.site.detailName}`
+              : `Started ${startDate} · ${live.site.companyName} · node status ${live.site.workStatus}`
             : `Started ${startDate}`
         }
       />
