@@ -309,6 +309,75 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     };
   }, [liveMs, data.reports]);
 
+  /**
+   * The stat cards, counted from the SAME checklist rows the table renders, so a
+   * card can never contradict the list beneath it.
+   *
+   * "Documents" here means checklist items (21 on Wadley), not File_Upload fields
+   * (82). The table is headed DOCUMENT and lists the checklist, so the card has to
+   * count the same thing or the two disagree on screen.
+   *
+   * There is deliberately no document-upload percentage. Across all of Telamon
+   * only 5 files have ever been uploaded -- 3 on Seymour, 1 on Port Barre, 1 on
+   * ARGONNE-CAMPUS -- so that figure would read 0% on virtually every node and
+   * look like a broken dashboard rather than an unused feature.
+   */
+  const docStats = useMemo(() => {
+    if (!checklist) return null;
+    const total = checklist.length;
+    const complete = checklist.filter((i) => i.status === 'complete').length;
+    const missing = checklist.filter((i) => i.status === 'missing').length;
+    const na = checklist.filter((i) => i.status === 'na').length;
+    // N/A items are excluded from the denominator: an item that does not apply
+    // should not count against the node, the same way the mock data treated it.
+    const applicable = total - na;
+    return {
+      total,
+      complete,
+      missing,
+      na,
+      pct: applicable > 0 ? Math.round((complete / applicable) * 100) : null,
+    };
+  }, [checklist]);
+
+  const cards = docStats
+    ? [
+        { label: 'TOTAL DOCUMENTS', value: docStats.total, color: '#F7F8FB' },
+        {
+          label: 'UPLOADED %',
+          value: docStats.pct === null ? '--' : `${docStats.pct}%`,
+          color: docStats.pct === null ? '#5A6478' : pctColor(docStats.pct),
+        },
+        {
+          label: 'MISSING',
+          value: docStats.missing,
+          color: docStats.missing > 0 ? DANGER : statusColor(STATUS.COMPLETE),
+        },
+        { label: 'N/A', value: docStats.na, color: '#9098A9' },
+        {
+          label: 'MILESTONES DONE',
+          value: milestoneView
+            ? `${milestoneView.complete}/${milestoneView.measurable.length}`
+            : `${summary.milestonesDone}/${summary.milestoneCount}`,
+          color: statusColor(STATUS.COMPLETE),
+        },
+      ]
+    : [
+        { label: 'TOTAL DOCUMENTS', value: summary.totalDocuments, color: '#F7F8FB' },
+        { label: 'UPLOADED %', value: `${summary.overallPct}%`, color: pctColor(summary.overallPct) },
+        {
+          label: 'MISSING',
+          value: summary.missing,
+          color: summary.missing > 0 ? DANGER : statusColor(STATUS.COMPLETE),
+        },
+        { label: 'N/A', value: summary.naCount, color: '#9098A9' },
+        {
+          label: 'MILESTONES DONE',
+          value: `${summary.milestonesDone}/${summary.milestoneCount}`,
+          color: statusColor(STATUS.COMPLETE),
+        },
+      ];
+
   const milestoneOptions = [
     'All milestones',
     ...(milestoneView ? milestoneView.items : summary.progress).map((m) => ({
@@ -459,23 +528,15 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         </div>
       </div>
 
-      <StatCards
-        items={[
-          { label: 'TOTAL DOCUMENTS', value: summary.totalDocuments, color: '#F7F8FB' },
-          { label: 'UPLOADED %', value: `${summary.overallPct}%`, color: pctColor(summary.overallPct) },
-          {
-            label: 'MISSING',
-            value: summary.missing,
-            color: summary.missing > 0 ? DANGER : statusColor(STATUS.COMPLETE),
-          },
-          { label: 'N/A', value: summary.naCount, color: '#9098A9' },
-          {
-            label: 'MILESTONES DONE',
-            value: `${summary.milestonesDone}/${summary.milestoneCount}`,
-            color: statusColor(STATUS.COMPLETE),
-          },
-        ]}
-      />
+      <StatCards items={cards} />
+      {docStats ? (
+        <p className="mon-cell-sub" style={{ marginTop: -14, marginBottom: 24 }}>
+          Counted from the {docStats.total} checklist items listed below, so these cards and the
+          table can never disagree. N/A is inferred, not sourced &mdash;{' '}
+          <code>CLOUD_ECSITE_FIELDRESULT.N_A</code> is <code>false</code> or null on all 8.5M rows,
+          so the warehouse carries no N/A flag.
+        </p>
+      ) : null}
 
       {/* Photos & daily reports -- same figures as the Route Monitor's row for
           this node, read from the same getNodeMetrics source so the two tabs
