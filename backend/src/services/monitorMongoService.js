@@ -74,6 +74,14 @@ const {
   classifyStage,
 } = require('../config/milestones');
 
+/**
+ * Header/payload assembly is shared with monitorService rather than copied. The
+ * aggregate and `name: null` handling was itself a bug fix; two copies means the
+ * next fix lands in one adapter only, and the symptom would be a wrong header
+ * that appears solely when MONGO_ENABLED is flipped.
+ */
+const { composeRouteMonitor, composeSiteMonitor } = require('./monitorComposition');
+
 const NODES = 'SmallCellNode';
 const SITES = 'Site';
 const COMPANIES = 'Company';
@@ -1061,6 +1069,34 @@ async function getNodeChecklist(scope = {}) {
   });
 }
 
+/* ---------------------------------------------------------------------------
+ * The two endpoint payloads.
+ *
+ * Pure composition, so the logic is shared with the Snowflake adapter rather
+ * than copied -- see monitorComposition.js for why. Only the data functions
+ * injected here differ.
+ * ------------------------------------------------------------------------- */
+
+async function getRouteMonitor(scope = {}) {
+  return composeRouteMonitor(scope, {
+    listRoutes,
+    getStatusCounts,
+    listNodes,
+    getNodeMetrics,
+  });
+}
+
+async function getSiteMonitor(scope = {}) {
+  return composeSiteMonitor(scope, {
+    listNodes,
+    getStatusCounts,
+    getNodeMetrics,
+    getNodeStages,
+    getNodeChecklist,
+    companyScopeOf,
+  });
+}
+
 module.exports = {
   DEFAULT_COMPANY_PATTERN,
   buildMatch,
@@ -1077,4 +1113,6 @@ module.exports = {
   getNodeMetrics,
   getNodeStages,
   getNodeChecklist,
+  getRouteMonitor,
+  getSiteMonitor,
 };
