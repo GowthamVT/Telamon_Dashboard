@@ -1117,6 +1117,8 @@ async function getSiteMonitor(scope = {}) {
 module.exports = {
   DEFAULT_COMPANY_PATTERN,
   buildScope,
+  /** Shared with monitorMongoService so both adapters classify items alike. */
+  classifyItemStatus,
   companyScopeOf,
   classifyStatus,
   getStatusCounts,

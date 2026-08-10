@@ -46,6 +46,25 @@ const EXPECTED_DIFFS = {
   'milestone.m2 done/total': 'stale Snowflake checklist',
   'milestone.m3 done/total': 'stale Snowflake checklist',
   'milestone.m4 done/total': 'stale Snowflake checklist',
+
+  /*
+   * The checklist table, same root cause. Every difference here was traced to a
+   * specific stale row rather than assumed:
+   *   - inChecklist is HIGHER in MongoDB (2044 vs 1822): current checklists have
+   *     more items than the snapshot.
+   *   - na is LOWER (150 vs 313): N/A partly means "not required by this node's
+   *     checklist", and with items now IN the checklist there are fewer extras.
+   *   - missing is HIGHER (1260 vs 1108): more required items means more that
+   *     lack evidence.
+   *   - onlyInSnowflake is exactly 1 -- COP-Documents on South Bay (ILA), which
+   *     is isDeleted:true in MongoDB and false in Snowflake's 2025-12-03 row.
+   */
+  'checklist.rows': 'stale Snowflake checklist',
+  'checklist.complete': 'stale Snowflake checklist',
+  'checklist.missing': 'stale Snowflake checklist -- more required items in the current one',
+  'checklist.na': 'stale Snowflake checklist -- fewer not-in-checklist extras',
+  'checklist.inChecklist': 'stale Snowflake checklist (14 items vs 20 on Wadley)',
+  'checklist.onlyInSnowflake': 'COP-Documents on South Bay: deleted in MongoDB, live in the snapshot',
 };
 
 let failures = 0;
@@ -194,6 +213,47 @@ function cmp(label, a, b, { note } = {}) {
 
     const mappedCount = (byNode) => Object.values(byNode).filter((n) => n.milestonesMapped).length;
     cmp('metrics.milestonesMapped', mappedCount(sM.byNode), mappedCount(mM.byNode));
+
+    // ---- stages: the per-stage photo detail behind the milestone card ----
+    const [sS, mS] = await Promise.all([
+      sfService.getNodeStages(scope),
+      mgService.getNodeStages(scope),
+    ]);
+    const flat = (byNode) => Object.entries(byNode).flatMap(([id, list]) => list.map((s) => ({ id, ...s })));
+    const sStages = flat(sS.byNode);
+    const mStages = flat(mS.byNode);
+    cmp('stages.rows', sStages.length, mStages.length);
+    cmp('stages.photos', sStages.reduce((t, s) => t + s.photos, 0), mStages.reduce((t, s) => t + s.photos, 0));
+    cmp('stages.photoFields', sStages.reduce((t, s) => t + s.photoFields, 0), mStages.reduce((t, s) => t + s.photoFields, 0));
+
+    // Which stage NAMES does each side see? Names, not counts, so a missing
+    // stage is identifiable rather than merely a number being off.
+    const sNames = new Set(sStages.map((s) => `${s.id}::${s.stage}`));
+    const mNames = new Set(mStages.map((s) => `${s.id}::${s.stage}`));
+    const sOnly = [...sNames].filter((n) => !mNames.has(n)).map((n) => n.split('::')[1]);
+    const mOnly = [...mNames].filter((n) => !sNames.has(n)).map((n) => n.split('::')[1]);
+    cmp('stages.onlyInSnowflake', sOnly.length, 0, { note: [...new Set(sOnly)].slice(0, 3).join(' | ') });
+    cmp('stages.onlyInMongo', 0, mOnly.length, { note: [...new Set(mOnly)].slice(0, 3).join(' | ') });
+
+    // ---- checklist: the Site Monitor table ----
+    const [sC, mC] = await Promise.all([
+      sfService.getNodeChecklist(scope),
+      mgService.getNodeChecklist(scope),
+    ]);
+    const sItems = flat(sC.byNode);
+    const mItems = flat(mC.byNode);
+    cmp('checklist.rows', sItems.length, mItems.length);
+    const byStatus = (items, st) => items.filter((i) => i.status === st).length;
+    cmp('checklist.complete', byStatus(sItems, 'complete'), byStatus(mItems, 'complete'));
+    cmp('checklist.missing', byStatus(sItems, 'missing'), byStatus(mItems, 'missing'));
+    cmp('checklist.na', byStatus(sItems, 'na'), byStatus(mItems, 'na'));
+    cmp('checklist.inChecklist', sItems.filter((i) => i.inChecklist).length, mItems.filter((i) => i.inChecklist).length);
+    const sNamesC = new Set(sItems.map((i) => `${i.id}::${i.name}`));
+    const mNamesC = new Set(mItems.map((i) => `${i.id}::${i.name}`));
+    const cOnlyS = [...sNamesC].filter((n) => !mNamesC.has(n)).map((n) => n.split('::')[1]);
+    const cOnlyM = [...mNamesC].filter((n) => !sNamesC.has(n)).map((n) => n.split('::')[1]);
+    cmp('checklist.onlyInSnowflake', cOnlyS.length, 0, { note: [...new Set(cOnlyS)].slice(0, 3).join(' | ') });
+    cmp('checklist.onlyInMongo', 0, cOnlyM.length, { note: [...new Set(cOnlyM)].slice(0, 3).join(' | ') });
 
     console.log('');
   }

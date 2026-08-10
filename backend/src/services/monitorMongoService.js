@@ -53,14 +53,26 @@ const cache = require('../cache/queryCache');
  * shared implementation cannot. Requiring the module does not open a Snowflake
  * connection -- its pool is created lazily on first query.
  */
-const { classifyStatus, DEFAULT_COMPANY_PATTERN } = require('./monitorService');
+const { classifyStatus, classifyItemStatus, DEFAULT_COMPANY_PATTERN } = require('./monitorService');
 
 /**
  * Milestone definitions, shared with the Snowflake service for the same reason:
  * this is a business-rule mapping, not source data, so both adapters must read
  * the one copy or the milestone bars would differ when the flag flips.
  */
-const { MILESTONES, MAPPED_STAGES, MIN_MAPPED_STAGES } = require('../config/milestones');
+const {
+  MILESTONES,
+  MAPPED_STAGES,
+  MIN_MAPPED_STAGES,
+  /**
+   * normaliseStage and classifyStage come from the shared config, not a local
+   * copy. An identical-looking duplicate is exactly how the two adapters would
+   * drift: change the regex in one place and the same stage classifies
+   * differently depending on which source is serving.
+   */
+  normaliseStage,
+  classifyStage,
+} = require('../config/milestones');
 
 const NODES = 'SmallCellNode';
 const SITES = 'Site';
@@ -428,19 +440,6 @@ async function getHierarchy(scope = {}) {
  * ------------------------------------------------------------------------- */
 
 /**
- * Normalise a stage name for milestone lookup.
- *
- * Must match the Snowflake expression exactly --
- * LOWER(REGEXP_REPLACE(text, '[^a-zA-Z0-9]', '')) -- or the same stage would
- * classify differently between the two adapters.
- */
-function normaliseStage(text) {
-  return String(text || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-/**
  * Working days (Mon-Fri) between two dates inclusive.
  *
  * Replaces ANALYTICS.CALENDAR, which the SQL joined for "Day of Week" NOT IN
@@ -748,6 +747,320 @@ async function getNodeMetrics(scope = {}) {
   });
 }
 
+/* ---------------------------------------------------------------------------
+ * Shared building blocks for getNodeStages / getNodeChecklist
+ * ------------------------------------------------------------------------- */
+
+/** Value of a customTags entry by tagType. The tags are [{tagType, tagValues}]. */
+function tagValue(customTags, tagType) {
+  if (!Array.isArray(customTags)) return null;
+  const hit = customTags.find((t) => t && t.tagType === tagType);
+  if (!hit || !Array.isArray(hit.tagValues) || !hit.tagValues.length) return null;
+  return hit.tagValues[0] == null ? null : String(hit.tagValues[0]);
+}
+
+/**
+ * Photo-field counts and last-upload dates per (node, form).
+ *
+ * One pass used by both getNodeStages and getNodeChecklist, so the two cannot
+ * disagree about how many photos a form has.
+ */
+async function formFactsForNodes(nodeIds) {
+  // Photo/document field counts from the form definitions.
+  const { rows: defs } = await mongo.aggregate(
+    'FormBuilderQuestions',
+    [
+      ...unwindToNodes(nodeIds),
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $project: {
+          nodeId: '$nodeIdList',
+          formId: { $toString: '$_id' },
+          formName: 1,
+          typeOfForm: 1,
+          photoFields: {
+            $size: {
+              $filter: { input: { $ifNull: ['$list', []] }, as: 'f', cond: { $eq: ['$$f.element', 'Photo'] } },
+            },
+          },
+          docFields: {
+            $size: {
+              $filter: { input: { $ifNull: ['$list', []] }, as: 'f', cond: { $eq: ['$$f.element', 'File_Upload'] } },
+            },
+          },
+        },
+      },
+    ],
+    { label: 'mongo-form-defs' }
+  );
+
+  // Media per (node, form): count, distinct fields touched, last upload.
+  const { rows: media } = await mongo.aggregate(
+    'FieldMedia',
+    [
+      ...unwindToNodes(nodeIds),
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: { nodeId: '$nodeIdList', formId: '$formId' },
+          photos: { $sum: 1 },
+          questionIds: { $addToSet: '$questionId' },
+          lastPhoto: { $max: '$createdAt' },
+        },
+      },
+      {
+        $project: {
+          photos: 1,
+          fieldsCovered: { $size: '$questionIds' },
+          lastPhoto: { $dateToString: { format: '%Y-%m-%d', date: '$lastPhoto' } },
+        },
+      },
+    ],
+    { label: 'mongo-form-media' }
+  );
+
+  // Submissions per (node, form), for the non-photolist items.
+  const { rows: answers } = await mongo.aggregate(
+    'FormBuilderAnswers',
+    [
+      ...unwindToNodes(nodeIds),
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: { nodeId: '$nodeIdList', formId: '$formId' },
+          submissions: { $sum: 1 },
+          lastSubmission: { $max: '$createdAt' },
+        },
+      },
+      {
+        $project: {
+          submissions: 1,
+          lastSubmission: { $dateToString: { format: '%Y-%m-%d', date: '$lastSubmission' } },
+        },
+      },
+    ],
+    { label: 'mongo-form-answers' }
+  );
+
+  const k = (nodeId, formId) => `${nodeId}::${formId}`;
+  return {
+    defs,
+    defByKey: new Map(defs.map((d) => [k(d.nodeId, d.formId), d])),
+    mediaByKey: new Map(media.map((m) => [k(m._id.nodeId, m._id.formId), m])),
+    answersByKey: new Map(answers.map((a) => [k(a._id.nodeId, a._id.formId), a])),
+    key: k,
+  };
+}
+
+/**
+ * Per-stage photo detail for the milestone card.
+ *
+ * Stages are the node's photolist FORMS, enumerated from FormBuilderQuestions by
+ * the node's own keys rather than from the checklist -- the checklist omits forms
+ * that still hold data, which is what made Wadley read 161 fields and 530 media
+ * where the truth was 166 and 593.
+ */
+async function getNodeStages(scope = {}) {
+  return cache.wrap('mongo-monitor-node-stages', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-stages-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, elapsedMs: Date.now() - started };
+
+    const facts = await formFactsForNodes(nodeIds);
+
+    const byNode = {};
+    for (const d of facts.defs) {
+      if (d.typeOfForm !== 'photolist') continue;
+      const m = facts.mediaByKey.get(facts.key(d.nodeId, d.formId)) || {};
+      const photos = Number(m.photos) || 0;
+
+      if (!byNode[d.nodeId]) byNode[d.nodeId] = [];
+      byNode[d.nodeId].push({
+        stage: d.formName,
+        // null when the stage name is not in the M1-M4 mapping (other templates).
+        milestone: classifyStage(d.formName),
+        photoFields: Number(d.photoFields) || 0,
+        photos,
+        fieldsCovered: Number(m.fieldsCovered) || 0,
+        lastPhoto: m.lastPhoto || null,
+        started: photos > 0,
+      });
+    }
+
+    // Same ordering as the SQL: most photos first, then name.
+    for (const list of Object.values(byNode)) {
+      list.sort((a, b) => b.photos - a.photos || String(a.stage).localeCompare(String(b.stage)));
+    }
+
+    return { byNode, elapsedMs: Date.now() - started };
+  });
+}
+
+/**
+ * The node's CHECKLIST -- what the Site Monitor's table shows.
+ *
+ * Source is FormGroup.list, the per-node checklist. Each element carries text
+ * (the item name), typeOfForm, formId, and customTags with "level 0" (section),
+ * "level 1" (stage) and "position".
+ *
+ * TWO THINGS THIS DOES DIFFERENTLY FROM THE SNOWFLAKE VERSION, both because the
+ * source is better here:
+ *
+ *  - No SCD2 filter is needed. Snowflake keeps three versions per node and
+ *    requires DBT_VALID_TO IS NULL to pick the current one; the MongoDB document
+ *    IS current. That also removes the staleness: Snowflake's "current" row for
+ *    Wadley is eight months old with 14 items where MongoDB has 20.
+ *  - Document-level isDeleted is filtered. A deleted checklist should not produce
+ *    rows, and MongoDB makes that a one-line $match.
+ *
+ * The checklist is still not the whole node: forms exist that are absent from it
+ * (Wadley's DAILY REPORT FORM among them). Those are unioned in and flagged
+ * inChecklist:false rather than dropped, exactly as the SQL version does.
+ */
+async function getNodeChecklist(scope = {}) {
+  return cache.wrap('mongo-monitor-node-checklist', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-checklist-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, elapsedMs: Date.now() - started };
+
+    // The checklist itself. customTags is extracted in JS -- the aggregation
+    // equivalent needs a $filter per tag type and is far harder to read.
+    const { rows: items } = await mongo.aggregate(
+      'FormGroup',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true } } },
+        { $unwind: '$list' },
+        { $match: { 'list.isDeleted': { $ne: true } } },
+        {
+          $project: {
+            _id: 0,
+            nodeId: '$nodeIdList',
+            sequence: '$list.sequence',
+            name: '$list.text',
+            kind: '$list.typeOfForm',
+            formId: '$list.formId',
+            customTags: '$list.customTags',
+          },
+        },
+      ],
+      { label: 'mongo-checklist' }
+    );
+
+    const facts = await formFactsForNodes(nodeIds);
+
+    const byNode = {};
+    const seen = new Set();
+
+    const push = (nodeId, row) => {
+      if (!byNode[nodeId]) byNode[nodeId] = [];
+      byNode[nodeId].push(row);
+    };
+
+    /** Build one row from a form's facts, shared by both branches below. */
+    const buildRow = ({ nodeId, name, kind, formId, sequence, section, stage, position, inChecklist }) => {
+      const m = facts.mediaByKey.get(facts.key(nodeId, formId)) || {};
+      const a = facts.answersByKey.get(facts.key(nodeId, formId)) || {};
+      const def = facts.defByKey.get(facts.key(nodeId, formId)) || {};
+      const photos = Number(m.photos) || 0;
+      const submissions = Number(a.submissions) || 0;
+
+      // Evidence-based: there is no per-item sign-off anywhere, so "done" means
+      // photos for a photo list and a submission for a form. Nothing stronger.
+      const done = kind === 'photolist' ? photos > 0 : submissions > 0;
+      const { status, statusReason } = classifyItemStatus({ name, done, inChecklist });
+
+      return {
+        name,
+        kind: kind || null,
+        status,
+        statusReason,
+        formId,
+        sequence: sequence === null || sequence === undefined ? null : Number(sequence),
+        position: position || null,
+        section: section || null,
+        stage: stage || null,
+        milestone: classifyStage(stage || name),
+        photoFields: Number(def.photoFields) || 0,
+        photos,
+        lastPhoto: m.lastPhoto || null,
+        submissions,
+        lastSubmission: a.lastSubmission || null,
+        inChecklist,
+        done,
+      };
+    };
+
+    for (const it of items) {
+      seen.add(facts.key(it.nodeId, it.formId));
+      push(
+        it.nodeId,
+        buildRow({
+          nodeId: it.nodeId,
+          name: it.name,
+          kind: it.kind,
+          formId: it.formId,
+          sequence: it.sequence,
+          section: tagValue(it.customTags, 'level 0'),
+          stage: tagValue(it.customTags, 'level 1'),
+          // "position" is the client's own ordering and can differ from sequence
+          // (Wadley's Shelter Placement is sequence 6, position 7).
+          position: tagValue(it.customTags, 'position'),
+          inChecklist: true,
+        })
+      );
+    }
+
+    // Forms present on the node but absent from its checklist.
+    for (const d of facts.defs) {
+      const k = facts.key(d.nodeId, d.formId);
+      if (seen.has(k)) continue;
+      if (!nodeIds.includes(d.nodeId)) continue;
+      seen.add(k);
+      push(
+        d.nodeId,
+        buildRow({
+          nodeId: d.nodeId,
+          name: d.formName,
+          kind: d.typeOfForm,
+          formId: d.formId,
+          sequence: null,
+          section: null,
+          stage: null,
+          position: null,
+          inChecklist: false,
+        })
+      );
+    }
+
+    // Same ordering as the SQL: checklist items first, then by sequence, then name.
+    for (const list of Object.values(byNode)) {
+      list.sort(
+        (a, b) =>
+          Number(b.inChecklist) - Number(a.inChecklist) ||
+          (a.sequence ?? 9999) - (b.sequence ?? 9999) ||
+          String(a.name).localeCompare(String(b.name))
+      );
+    }
+
+    return { byNode, elapsedMs: Date.now() - started };
+  });
+}
+
 module.exports = {
   DEFAULT_COMPANY_PATTERN,
   buildMatch,
@@ -755,11 +1068,13 @@ module.exports = {
   classifyStatus,
   resolveCompanyIds,
   nodesInScope,
-  normaliseStage,
   workingDaysBetween,
+  tagValue,
   listNodes,
   listRoutes,
   getStatusCounts,
   getHierarchy,
   getNodeMetrics,
+  getNodeStages,
+  getNodeChecklist,
 };
