@@ -15,7 +15,8 @@
     "introspect": "node scripts/introspect-schema.js",
     "test": "node --test \"test/*.test.js\"",
     "dev:mock": "node scripts/mock-server.js",
-    "verify:mongo": "node scripts/verify-mongo.js"
+    "verify:mongo": "node scripts/verify-mongo.js",
+    "compare": "node scripts/compare-sources.js"
   },
   "dependencies": {
     "compression": "^1.8.1",
