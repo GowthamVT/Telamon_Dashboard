@@ -633,6 +633,53 @@ async function getNodeMetrics(scope = {}) {
       rows.forEach((r) => photosByNode.set(r._id, r.photos));
     }
 
+    /* ---- 5b. EXACT photo coverage and the N/A flag, from ProgressStats ----
+     *
+     * ProgressStats holds one document per photo FIELD per node, with:
+     *   status  'Completed' | 'In-Complete' | 'Not Required'  -- app-maintained
+     *   n_a     boolean                                        -- the N/A flag
+     *   questionId                                             -- the real field id
+     *
+     * This replaces two long-standing approximations:
+     *
+     *  1. COVERAGE WAS APPROXIMATE. It counted DISTINCT FieldMedia.questionId,
+     *     which holds answer-level GUIDs rather than question ids, so it came out
+     *     within a couple of fields of the portal rather than equal to it.
+     *     ProgressStats.status is the same per-field flag the portal reads, and
+     *     its document count equals photoFields exactly (120/120 on
+     *     ARGONNE-CAMPUS, 166/166 on Wadley, 165/165 on Basile).
+     *
+     *  2. N/A COULD NOT BE EXCLUDED. I previously reported that no N/A flag
+     *     existed in any table -- that was wrong. `n_a` is here and populated
+     *     (20 on Wadley, 10 on PASS CHRISTIAN, 0 on Basile). Excluding those
+     *     fields from the denominator is what the portal's "Total Fields Count"
+     *     does, so the percentage stops running low.
+     *
+     * When a node has no ProgressStats documents the old approximation is kept
+     * and photoPctApproximate stays true, so the UI can still say which it is.
+     */
+    const coverageByNode = new Map();
+    {
+      const { rows } = await mongo.aggregate(
+        'ProgressStats',
+        [
+          ...unwindToNodes(nodeIds),
+          { $match: { isDeleted: { $ne: true } } },
+          {
+            $group: {
+              _id: '$nodeIdList',
+              fields: { $sum: 1 },
+              completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+              naFields: { $sum: { $cond: [{ $eq: ['$n_a', true] }, 1, 0] } },
+              notRequired: { $sum: { $cond: [{ $eq: ['$status', 'Not Required'] }, 1, 0] } },
+            },
+          },
+        ],
+        { label: 'mongo-metrics-coverage' }
+      );
+      rows.forEach((r) => coverageByNode.set(r._id, r));
+    }
+
     /* ---- 6. daily reports ----
      * Forms identified by NAME in the definitions, deliberately not via the
      * node's checklist: the DAILY REPORT FORM is frequently absent from it.
@@ -704,7 +751,24 @@ async function getNodeMetrics(scope = {}) {
       const m = mediaByNode.get(nodeId) || { photosAll: 0, fieldsCovered: 0 };
       const r = reportsByNode.get(nodeId) || null;
       const photoFields = Number(f.photoFields) || 0;
-      const fieldsCovered = Number(m.fieldsCovered) || 0;
+
+      /*
+       * Coverage: prefer ProgressStats (exact, app-maintained, N/A-aware) and
+       * fall back to the DISTINCT-questionId approximation only when a node has
+       * no ProgressStats documents. photoPctApproximate tells the UI which it is,
+       * so the caveat under the bar is never shown when the figure is exact.
+       */
+      const cov = coverageByNode.get(nodeId) || null;
+      const exactCoverage = Boolean(cov && Number(cov.fields) > 0);
+      const naFields = cov ? Number(cov.naFields) || 0 : 0;
+      const fieldsCovered = exactCoverage
+        ? Number(cov.completed) || 0
+        : Number(m.fieldsCovered) || 0;
+      // Denominator excludes N/A: a field that does not apply should not count
+      // against the node. This is what the portal's "Total Fields Count" shows.
+      const coverageDenominator = exactCoverage
+        ? Math.max(Number(cov.fields) - naFields, 0)
+        : photoFields;
 
       // NULL, not 0, when the node never reported: there is no window to measure,
       // which is different from having missed zero days.
@@ -746,8 +810,14 @@ async function getNodeMetrics(scope = {}) {
         photos: photosByNode.get(nodeId) || 0,
         photosAllMedia: Number(m.photosAll) || 0,
         fieldsCovered,
-        photoPct: photoFields > 0 ? Math.min(100, Math.round((fieldsCovered / photoFields) * 100)) : null,
-        photoPctApproximate: true,
+        /** Fields the app marks N/A, excluded from the denominator below. */
+        naFields,
+        coverageDenominator,
+        photoPct:
+          coverageDenominator > 0
+            ? Math.min(100, Math.round((fieldsCovered / coverageDenominator) * 100))
+            : null,
+        photoPctApproximate: !exactCoverage,
       };
     }
 
@@ -997,7 +1067,13 @@ async function getNodeChecklist(scope = {}) {
         kind: kind || null,
         status,
         statusReason,
-        formId,
+        /*
+         * Explicitly null, never undefined: some checklist items have no backing
+         * form at all -- "Segment Sweep/PIM" and "System Sweep/PIM" on 10 nodes
+         * -- and undefined is dropped by JSON.stringify, so the field would
+         * vanish from the payload rather than being reported as absent.
+         */
+        formId: formId || null,
         sequence: sequence === null || sequence === undefined ? null : Number(sequence),
         position: position || null,
         section: section || null,

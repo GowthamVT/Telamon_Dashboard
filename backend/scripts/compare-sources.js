@@ -65,7 +65,41 @@ const EXPECTED_DIFFS = {
   'checklist.na': 'stale Snowflake checklist -- fewer not-in-checklist extras',
   'checklist.inChecklist': 'stale Snowflake checklist (14 items vs 20 on Wadley)',
   'checklist.onlyInSnowflake': 'COP-Documents on South Bay: deleted in MongoDB, live in the snapshot',
+
+  /*
+   * fieldsCovered is now computed differently ON PURPOSE. Snowflake counts
+   * DISTINCT FieldMedia.questionId, which holds answer-level GUIDs and only ever
+   * approximated the portal. MongoDB uses ProgressStats.status='Completed', the
+   * per-field flag the portal itself reads, with N/A excluded from the
+   * denominator. Wadley reads 117 of 146 instead of 137 of 166.
+   */
+  'metrics.fieldsCovered': 'MongoDB uses exact ProgressStats coverage; Snowflake approximates',
 };
+
+/**
+ * Metrics that move with the pipeline, not with code.
+ *
+ * The warehouse trails MongoDB by ~10 minutes (measured), so a photo uploaded in
+ * that window exists in MongoDB and not yet in Snowflake. MongoDB being AHEAD by
+ * a small margin is therefore expected; MongoDB being BEHIND, or ahead by a lot,
+ * is a real defect. Encoded as a direction + tolerance rather than ignored, so a
+ * genuine undercount still fails.
+ */
+const LAG_SENSITIVE = new Set([
+  'metrics.photos',
+  'metrics.photosAllMedia',
+  'metrics.stagePhotos',
+  'stages.photos',
+  'metrics.reports',
+  'metrics.reportDays',
+]);
+const LAG_TOLERANCE = 0.01; // 1% of the Snowflake figure
+
+/** First integer in a value like "17178 (1 bad)". */
+function firstNumber(v) {
+  const m = String(v).match(/-?\d+/);
+  return m ? Number(m[0]) : NaN;
+}
 
 let failures = 0;
 let expected = 0;
@@ -74,17 +108,29 @@ let checks = 0;
 function cmp(label, a, b, { note } = {}) {
   checks += 1;
   const same = JSON.stringify(a) === JSON.stringify(b);
-  const known = EXPECTED_DIFFS[label];
+  let known = EXPECTED_DIFFS[label];
 
   let tag = 'ok    ';
-  if (!same && known) { expected += 1; tag = 'xdiff '; }
+  let why = known;
+  if (!same && !known && LAG_SENSITIVE.has(label)) {
+    const sv = firstNumber(a);
+    const mv = firstNumber(b);
+    const ahead = mv >= sv;
+    const within = Number.isFinite(sv) && sv > 0 ? (mv - sv) / sv <= LAG_TOLERANCE : false;
+    if (ahead && within) {
+      why = `MongoDB ahead by ${mv - sv} -- warehouse lags ~10min`;
+      known = why;
+    }
+  }
+
+  if (!same && known) { expected += 1; tag = why === EXPECTED_DIFFS[label] ? 'xdiff ' : 'xlag  '; }
   else if (!same) { failures += 1; tag = 'DIFF  '; }
 
   const fmt = (v) => (v === undefined ? '(undefined)' : typeof v === 'object' ? JSON.stringify(v) : String(v));
   console.log(
     '    ' + tag + label.padEnd(30) +
     fmt(a).slice(0, 28).padEnd(30) + fmt(b).slice(0, 28).padEnd(30) +
-    (!same ? '  <- ' + (known || note || '') : '')
+    (!same ? '  <- ' + (why || note || '') : '')
   );
 }
 
@@ -260,7 +306,8 @@ function cmp(label, a, b, { note } = {}) {
 
   console.log('----------------------------------------------------------');
   console.log(`${checks} checks: ${checks - failures - expected} match, ` +
-    `${expected} expected divergence (xdiff), ${failures} UNEXPECTED`);
+    `${expected} expected (xdiff = known divergence, xlag = pipeline lag), ` +
+    `${failures} UNEXPECTED`);
   if (expected) {
     console.log('');
     console.log('expected divergences -- MongoDB is the correct side:');

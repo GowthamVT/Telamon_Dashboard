@@ -264,13 +264,22 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       };
     }
     const pct = liveMs.photoPct ?? 0;
+    /*
+     * The denominator must be the SAME one the percentage used. It excludes N/A
+     * fields, so showing fieldsCovered/photoFields here while the percentage is
+     * fieldsCovered/(photoFields - naFields) would put two contradictory figures
+     * on one line -- Wadley would read "117/166 - 80%" when 117/166 is 70%.
+     */
+    const denominator = liveMs.coverageDenominator ?? liveMs.photoFields;
+    const na = Number(liveMs.naFields) || 0;
     return {
       pct,
       color: pctColor(pct),
-      label: `${liveMs.fieldsCovered}/${liveMs.photoFields} · ${pct}%`,
-      note: `${liveMs.photos} photos uploaded (exact)${
-        liveMs.photoPctApproximate ? ' · coverage approximate, N/A fields not excluded' : ''
-      }`,
+      label: `${liveMs.fieldsCovered}/${denominator} · ${pct}%`,
+      note: liveMs.photoPctApproximate
+        ? `${liveMs.photos} photos uploaded (exact) · coverage approximate, N/A fields not excluded`
+        : `${liveMs.photos} photos uploaded · ${liveMs.fieldsCovered} of ${denominator} fields complete` +
+          (na > 0 ? ` · ${na} field${na === 1 ? '' : 's'} marked N/A and excluded` : ''),
     };
   }, [liveMs, data.photos, overallStatus]);
 
@@ -618,7 +627,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           </div>
 
           {visibleItems
-            ? visibleItems.map((it) => <ChecklistRow key={it.formId} item={it} />)
+            ? visibleItems.map((it, i) => (
+                /* formId is null on items with no backing form (Segment Sweep/PIM),
+                   so it cannot be the key on its own -- two such rows collide. */
+                <ChecklistRow key={`${it.formId || 'no-form'}:${it.sequence ?? i}:${it.name}`} item={it} />
+              ))
             : visible.map((item) => <DocumentRow key={item.id} item={item} />)}
 
           {(visibleItems || visible).length === 0 ? (
