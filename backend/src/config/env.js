@@ -131,6 +131,28 @@ const config = Object.freeze({
   snowflake: Object.freeze({ ...snowflake, resolvedKeyPath }),
   readPrivateKey,
 
+  /**
+   * MongoDB source cluster (the ECSite production database).
+   *
+   * Deliberately NOT validated with required(): Mongo is optional while the
+   * migration is in progress, so a missing MONGO_URI must not stop the Snowflake
+   * path from booting. db/mongo.js raises an actionable error if something tries
+   * to use it unconfigured.
+   *
+   * `enabled` is the migration switch. While false the monitors are served from
+   * Snowflake exactly as before, and the Mongo adapter can be tested directly
+   * without any traffic reaching it.
+   */
+  mongo: Object.freeze({
+    uri: optional('MONGO_URI', ''),
+    database: optional('MONGO_DATABASE', ''),
+    enabled: bool('MONGO_ENABLED', false),
+    poolMax: int('MONGO_POOL_MAX', 6),
+    queryTimeoutMs: int('MONGO_QUERY_TIMEOUT_MS', 60_000),
+    serverSelectionTimeoutMs: int('MONGO_SERVER_SELECTION_TIMEOUT_MS', 15_000),
+    connectTimeoutMs: int('MONGO_CONNECT_TIMEOUT_MS', 15_000),
+  }),
+
   cache: Object.freeze({
     ttlSeconds: int('CACHE_TTL_SECONDS', 300),
     maxEntries: int('CACHE_MAX_ENTRIES', 500),

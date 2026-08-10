@@ -14,7 +14,8 @@
     "verify": "node scripts/verify-connection.js",
     "introspect": "node scripts/introspect-schema.js",
     "test": "node --test \"test/*.test.js\"",
-    "dev:mock": "node scripts/mock-server.js"
+    "dev:mock": "node scripts/mock-server.js",
+    "verify:mongo": "node scripts/verify-mongo.js"
   },
   "dependencies": {
     "compression": "^1.8.1",
@@ -23,6 +24,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.1",
     "helmet": "^8.3.0",
+    "mongodb": "^7.5.0",
     "morgan": "^1.11.0",
     "snowflake-sdk": "^3.1.0"
   }
