@@ -33,7 +33,12 @@ const FIELD_MEDIA = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FIELDMEDIA"';
 const FORM_ANSWERS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERANSWERS"';
 /** Form definitions; LIST holds the questions (element='Photo' = a photo field). */
 const FORM_QUESTIONS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERQUESTIONS"';
-/** Date dimension -- "Day of Week" 1=Sunday, 7=Saturday. No holiday flag. */
+/**
+ * Date dimension. "Day of Week" is ZERO-indexed: 0=Sunday .. 6=Saturday.
+ * Verified against DAYNAME() -- an earlier comment here claimed 1=Sunday/7=Saturday
+ * and the query filtered NOT IN (1,7), which excluded Mondays and kept every
+ * weekend. No holiday flag exists, so public holidays still count as working days.
+ */
 const CALENDAR = '"ECSITE"."ANALYTICS"."CALENDAR"';
 /**
  * Pre-aggregated photo counts per node/day.
@@ -291,6 +296,12 @@ async function getNodeMetrics(scope = {}) {
                LATERAL FLATTEN(input => g.NODEIDLIST) nl,
                LATERAL FLATTEN(input => g.LIST) f
          WHERE g.DBT_VALID_TO IS NULL                       -- SCD2: current only
+           -- Document-level ISDELETED, not just the item's. Without it, a
+           -- DELETED checklist still produces milestone bars: Blue Canyon and
+           -- Gaffney-Lumen-GBII-ILA-576932 had theirs deleted (2026-05-27 and
+           -- 2026-07-06) yet reported 11 and 12 mapped stages. getNodeChecklist
+           -- already filtered this, so the two functions disagreed.
+           AND NOT COALESCE(g.ISDELETED, FALSE)
            AND NOT COALESCE(f.value:isDeleted::BOOLEAN, FALSE)
       ),
       stages AS (
@@ -411,14 +422,19 @@ async function getNodeMetrics(scope = {}) {
       -- 2025-11-18, so counting from node start returns ~200 for every node and
       -- measures the pre-reporting era rather than missed work.
       --
-      -- Weekends excluded via CALENDAR."Day of Week" (1=Sun, 7=Sat). CALENDAR has
-      -- no holiday flag, so public holidays still count as missed.
+      -- Weekends excluded via CALENDAR."Day of Week", which is ZERO-indexed:
+      -- 0=Sunday, 6=Saturday. This previously read NOT IN (1,7) on the assumption
+      -- of 1=Sunday/7=Saturday; since 7 does not exist that excluded MONDAYS and
+      -- counted every Saturday and Sunday as a working day, overstating missed
+      -- days by roughly a third (Wadley: 47 working days instead of 40, so 21
+      -- missed instead of 14). CALENDAR has no holiday flag, so public holidays
+      -- still count as missed.
       working_days AS (
         SELECT r.NODEID, COUNT(*) AS work_days
           FROM reports r
           JOIN ${CALENDAR} c
                 ON c."Date" BETWEEN r.first_day AND r.last_day
-               AND c."Day of Week" NOT IN (1, 7)
+               AND c."Day of Week" NOT IN (0, 6)   -- 0=Sun, 6=Sat
          GROUP BY 1
       )
       SELECT s.NODEID,

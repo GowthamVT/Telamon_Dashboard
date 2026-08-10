@@ -55,6 +55,13 @@ const cache = require('../cache/queryCache');
  */
 const { classifyStatus, DEFAULT_COMPANY_PATTERN } = require('./monitorService');
 
+/**
+ * Milestone definitions, shared with the Snowflake service for the same reason:
+ * this is a business-rule mapping, not source data, so both adapters must read
+ * the one copy or the milestone bars would differ when the flag flips.
+ */
+const { MILESTONES, MAPPED_STAGES, MIN_MAPPED_STAGES } = require('../config/milestones');
+
 const NODES = 'SmallCellNode';
 const SITES = 'Site';
 const COMPANIES = 'Company';
@@ -416,6 +423,331 @@ async function getHierarchy(scope = {}) {
   });
 }
 
+/* ---------------------------------------------------------------------------
+ * getNodeMetrics support
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Normalise a stage name for milestone lookup.
+ *
+ * Must match the Snowflake expression exactly --
+ * LOWER(REGEXP_REPLACE(text, '[^a-zA-Z0-9]', '')) -- or the same stage would
+ * classify differently between the two adapters.
+ */
+function normaliseStage(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Working days (Mon-Fri) between two dates inclusive.
+ *
+ * Replaces ANALYTICS.CALENDAR, which the SQL joined for "Day of Week" NOT IN
+ * (1,7). Like CALENDAR, this has no holiday list, so public holidays still count
+ * as missed -- the same known limitation, not a new one.
+ */
+function workingDaysBetween(firstIso, lastIso) {
+  if (!firstIso || !lastIso) return 0;
+  const start = new Date(firstIso + 'T00:00:00Z');
+  const end = new Date(lastIso + 'T00:00:00Z');
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+
+  let count = 0;
+  for (const d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    const day = d.getUTCDay(); // 0 = Sunday, 6 = Saturday
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Attribute a per-node aggregation back to the nodes we asked for.
+ *
+ * The id collections carry nodeIdList (an array), so a document can belong to
+ * several nodes. $unwind then re-matching against the requested ids is what
+ * keeps a shared form from being counted against nodes outside the scope.
+ */
+function unwindToNodes(nodeIds) {
+  return [
+    { $match: { nodeIdList: { $in: nodeIds } } },
+    { $unwind: '$nodeIdList' },
+    { $match: { nodeIdList: { $in: nodeIds } } },
+  ];
+}
+
+/**
+ * Per-node metrics: photos, photo fields, daily reports, missed days, milestones.
+ *
+ * The Snowflake version is one 150-line statement of CTEs. Here it is several
+ * batched aggregations assembled in JS -- same inputs, same outputs, and each
+ * piece can be checked on its own.
+ *
+ * SOURCE CHOICES, both tested rather than assumed:
+ *
+ *  - Photos come from FieldMedia. Verified exact: Wadley's photolist forms sum
+ *    to 686, matching Snowflake. This also replaces
+ *    CLOUD_PHOTOCOUNT_PHOTOLIST_AGG.PHOTOLISTENTRIES, which is the same figure
+ *    pre-aggregated.
+ *
+ *  - Daily reports come from FormBuilderAnswers, NOT FieldMedia. FieldMedia only
+ *    has a row when a report carries a photo, and across the 193 Telamon nodes
+ *    with a daily-report form it undercounts on 48 of them -- 376 against 501,
+ *    so 125 reports have no photo. Walnut-MS alone reads 7 instead of 24. Using
+ *    it would also inflate missed days, since fewer report days means more days
+ *    counted as missed.
+ */
+async function getNodeMetrics(scope = {}) {
+  return cache.wrap('mongo-monitor-node-metrics', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    // The nodes in scope. Everything below is keyed on these ids.
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-metrics-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, nodeCount: 0, elapsedMs: Date.now() - started };
+
+    /* ---- 1. checklist photolist stages per node (for the milestone rollup) ---- */
+    const { rows: stageRows } = await mongo.aggregate(
+      'FormGroup',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true } } },
+        { $unwind: '$list' },
+        { $match: { 'list.typeOfForm': 'photolist', 'list.isDeleted': { $ne: true } } },
+        {
+          $project: {
+            _id: 0,
+            nodeId: '$nodeIdList',
+            text: '$list.text',
+            formId: '$list.formId',
+          },
+        },
+      ],
+      { label: 'mongo-metrics-stages' }
+    );
+
+    /* ---- 2. photo media per (node, form), for per-stage photo counts ---- */
+    const { rows: mediaByForm } = await mongo.aggregate(
+      'FieldMedia',
+      [
+        ...unwindToNodes(nodeIds),
+        // mime is 'photo' on some rows and 'image' on others -- both are photos.
+        { $match: { isDeleted: { $ne: true }, mime: { $in: ['photo', 'image'] } } },
+        { $group: { _id: { nodeId: '$nodeIdList', formId: '$formId' }, photos: { $sum: 1 } } },
+      ],
+      { label: 'mongo-metrics-stage-media' }
+    );
+    const photosByNodeForm = new Map();
+    for (const r of mediaByForm) {
+      photosByNodeForm.set(`${r._id.nodeId}::${r._id.formId}`, r.photos);
+    }
+
+    /* ---- 3. photo FIELDS defined, and the photolist form ids ----
+     * Enumerated from FormBuilderQuestions by the node's own keys, NOT from the
+     * checklist -- the checklist omits forms that still hold data. Same reason
+     * the SQL version does it this way. */
+    const { rows: fieldRows } = await mongo.aggregate(
+      'FormBuilderQuestions',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true }, typeOfForm: 'photolist' } },
+        {
+          $project: {
+            nodeId: '$nodeIdList',
+            formId: { $toString: '$_id' },
+            photoFields: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ['$list', []] },
+                  as: 'f',
+                  // element='Photo' only -- Section_Header rows are layout.
+                  cond: { $eq: ['$$f.element', 'Photo'] },
+                },
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: '$nodeId',
+            photoFields: { $sum: '$photoFields' },
+            formIds: { $addToSet: '$formId' },
+          },
+        },
+      ],
+      { label: 'mongo-metrics-photo-fields' }
+    );
+    const fieldsByNode = new Map(fieldRows.map((r) => [r._id, r]));
+
+    /* ---- 4. all media per node: total, and distinct fields covered ---- */
+    const { rows: allMedia } = await mongo.aggregate(
+      'FieldMedia',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true } } },
+        {
+          $group: {
+            _id: '$nodeIdList',
+            photosAll: { $sum: 1 },
+            questionIds: { $addToSet: '$questionId' },
+            photolistIds: { $addToSet: { formId: '$formId', mime: '$mime' } },
+          },
+        },
+        {
+          $project: {
+            photosAll: 1,
+            fieldsCovered: { $size: '$questionIds' },
+          },
+        },
+      ],
+      { label: 'mongo-metrics-media' }
+    );
+    const mediaByNode = new Map(allMedia.map((r) => [r._id, r]));
+
+    /* ---- 5. photolist-only media: the headline photo figure ---- */
+    const photolistFormIds = [...new Set(fieldRows.flatMap((r) => r.formIds || []))];
+    const photosByNode = new Map();
+    if (photolistFormIds.length) {
+      const { rows } = await mongo.aggregate(
+        'FieldMedia',
+        [
+          { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: photolistFormIds } } },
+          { $unwind: '$nodeIdList' },
+          { $match: { nodeIdList: { $in: nodeIds }, isDeleted: { $ne: true } } },
+          { $group: { _id: '$nodeIdList', photos: { $sum: 1 } } },
+        ],
+        { label: 'mongo-metrics-photolist-media' }
+      );
+      rows.forEach((r) => photosByNode.set(r._id, r.photos));
+    }
+
+    /* ---- 6. daily reports ----
+     * Forms identified by NAME in the definitions, deliberately not via the
+     * node's checklist: the DAILY REPORT FORM is frequently absent from it.
+     * Alexander City has 19 submissions but a checklist containing only
+     * COP-Documents and the tracker, so the checklist route reported 0. */
+    const { rows: dailyForms } = await mongo.aggregate(
+      'FormBuilderQuestions',
+      [
+        { $match: { formName: { $regex: 'DAILY REPORT', $options: 'i' }, isDeleted: { $ne: true } } },
+        { $group: { _id: null, ids: { $addToSet: { $toString: '$_id' } } } },
+      ],
+      { label: 'mongo-metrics-daily-forms' }
+    );
+    const dailyFormIds = dailyForms.length ? dailyForms[0].ids : [];
+
+    const reportsByNode = new Map();
+    if (dailyFormIds.length) {
+      const { rows } = await mongo.aggregate(
+        'FormBuilderAnswers',
+        [
+          { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: dailyFormIds } } },
+          { $unwind: '$nodeIdList' },
+          { $match: { nodeIdList: { $in: nodeIds }, isDeleted: { $ne: true } } },
+          {
+            // Per node per DAY, so submissions and distinct days both come out.
+            $group: {
+              _id: {
+                nodeId: '$nodeIdList',
+                day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+              },
+              subs: { $addToSet: '$answerSetId' },
+            },
+          },
+          {
+            $group: {
+              _id: '$_id.nodeId',
+              reports: { $sum: { $size: '$subs' } },
+              reportDays: { $sum: 1 },
+              firstDay: { $min: '$_id.day' },
+              lastDay: { $max: '$_id.day' },
+            },
+          },
+        ],
+        { label: 'mongo-metrics-reports' }
+      );
+      rows.forEach((r) => reportsByNode.set(r._id, r));
+    }
+
+    /* ---- 7. assemble ---- */
+    const stagesByNode = new Map();
+    for (const s of stageRows) {
+      if (!stagesByNode.has(s.nodeId)) stagesByNode.set(s.nodeId, []);
+      stagesByNode.get(s.nodeId).push({
+        norm: normaliseStage(s.text),
+        photos: photosByNodeForm.get(`${s.nodeId}::${s.formId}`) || 0,
+      });
+    }
+
+    const byNode = {};
+    for (const nodeId of nodeIds) {
+      const stages = stagesByNode.get(nodeId) || [];
+      const mappedTotal = stages.filter((s) => MAPPED_STAGES.includes(s.norm)).length;
+      // A node whose checklist matches no known stage is on a different template
+      // (0MH PHOTOS, WBS codes, in-building levels). Not measurable, which is
+      // different from being at 0%.
+      const mapped = mappedTotal >= MIN_MAPPED_STAGES;
+
+      const f = fieldsByNode.get(nodeId) || { photoFields: 0 };
+      const m = mediaByNode.get(nodeId) || { photosAll: 0, fieldsCovered: 0 };
+      const r = reportsByNode.get(nodeId) || null;
+      const photoFields = Number(f.photoFields) || 0;
+      const fieldsCovered = Number(m.fieldsCovered) || 0;
+
+      // NULL, not 0, when the node never reported: there is no window to measure,
+      // which is different from having missed zero days.
+      let missedDays = null;
+      if (r) {
+        const workDays = workingDaysBetween(r.firstDay, r.lastDay);
+        missedDays = Math.max(workDays - Number(r.reportDays || 0), 0);
+      }
+
+      byNode[nodeId] = {
+        milestonesMapped: mapped,
+        mappedStages: mappedTotal,
+        totalStages: stages.length,
+        stagePhotos: stages.reduce((sum, s) => sum + s.photos, 0),
+        milestones: MILESTONES.map((ms) => {
+          if (ms.stages.length === 0) {
+            return {
+              key: ms.key, label: ms.label, name: ms.name,
+              measurable: false, reason: ms.unmeasurableReason,
+              pct: null, done: 0, total: 0,
+            };
+          }
+          const inMs = stages.filter((s) => ms.stages.includes(s.norm));
+          const total = inMs.length;
+          const done = inMs.filter((s) => s.photos > 0).length;
+          return {
+            key: ms.key, label: ms.label, name: ms.name,
+            measurable: mapped && total > 0,
+            done, total,
+            pct: mapped && total > 0 ? Math.round((done / total) * 100) : null,
+          };
+        }),
+        reports: r ? Number(r.reports) || 0 : 0,
+        reportDays: r ? Number(r.reportDays) || 0 : 0,
+        lastReport: r ? r.lastDay || null : null,
+        missedDays,
+
+        photoFields,
+        photos: photosByNode.get(nodeId) || 0,
+        photosAllMedia: Number(m.photosAll) || 0,
+        fieldsCovered,
+        photoPct: photoFields > 0 ? Math.min(100, Math.round((fieldsCovered / photoFields) * 100)) : null,
+        photoPctApproximate: true,
+      };
+    }
+
+    return { byNode, nodeCount: nodeIds.length, elapsedMs: Date.now() - started };
+  });
+}
+
 module.exports = {
   DEFAULT_COMPANY_PATTERN,
   buildMatch,
@@ -423,8 +755,11 @@ module.exports = {
   classifyStatus,
   resolveCompanyIds,
   nodesInScope,
+  normaliseStage,
+  workingDaysBetween,
   listNodes,
   listRoutes,
   getStatusCounts,
   getHierarchy,
+  getNodeMetrics,
 };

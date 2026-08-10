@@ -27,18 +27,45 @@ const SCOPES = [
   ['node: Wadley', { nodeId: '692f6fc9ffda99c8f8423306' }],
 ];
 
+/**
+ * Differences we EXPECT, with the reason.
+ *
+ * Snowflake's CLOUD_FORMGOUP_SS keeps only one "current" SCD2 row and it is
+ * eight months stale -- 14 checklist items updated 2025-12-02, where MongoDB has
+ * 20 updated 2026-07-31. Everything derived from the checklist therefore differs,
+ * and MongoDB is the correct side.
+ *
+ * These are listed rather than silenced so the harness still fails on anything
+ * unexpected. A test that always reports 18 differences hides the nineteenth.
+ */
+const EXPECTED_DIFFS = {
+  'metrics.mappedStages': 'stale Snowflake checklist (14 items vs 20)',
+  'metrics.totalStages': 'stale Snowflake checklist (14 items vs 20)',
+  'metrics.stagePhotos': 'stale Snowflake checklist -- missing stages carry photos',
+  'milestone.m1 done/total': 'stale Snowflake checklist',
+  'milestone.m2 done/total': 'stale Snowflake checklist',
+  'milestone.m3 done/total': 'stale Snowflake checklist',
+  'milestone.m4 done/total': 'stale Snowflake checklist',
+};
+
 let failures = 0;
+let expected = 0;
 let checks = 0;
 
 function cmp(label, a, b, { note } = {}) {
   checks += 1;
   const same = JSON.stringify(a) === JSON.stringify(b);
-  if (!same) failures += 1;
+  const known = EXPECTED_DIFFS[label];
+
+  let tag = 'ok    ';
+  if (!same && known) { expected += 1; tag = 'xdiff '; }
+  else if (!same) { failures += 1; tag = 'DIFF  '; }
+
   const fmt = (v) => (v === undefined ? '(undefined)' : typeof v === 'object' ? JSON.stringify(v) : String(v));
   console.log(
-    '    ' + (same ? 'ok    ' : 'DIFF  ') + label.padEnd(30) +
+    '    ' + tag + label.padEnd(30) +
     fmt(a).slice(0, 28).padEnd(30) + fmt(b).slice(0, 28).padEnd(30) +
-    (note && !same ? '  <- ' + note : '')
+    (!same ? '  <- ' + (known || note || '') : '')
   );
 }
 
@@ -116,13 +143,71 @@ function cmp(label, a, b, { note } = {}) {
     cmp('hierarchy.sites', sH.totals.sites, mH.totals.sites);
     cmp('hierarchy.nodes', sH.totals.nodes, mH.totals.nodes);
 
+    // ---- node metrics: the numbers on the cards ----
+    const [sM, mM] = await Promise.all([
+      sfService.getNodeMetrics(scope),
+      mgService.getNodeMetrics(scope),
+    ]);
+    cmp('metrics.nodeCount', sM.nodeCount, mM.nodeCount);
+
+    /*
+     * Summed across every node in scope rather than spot-checked, so one node
+     * quietly disagreeing cannot hide inside a total that happens to match.
+     * Per-field mismatch counts are reported alongside.
+     */
+    const METRIC_FIELDS = [
+      'photoFields', 'photos', 'photosAllMedia', 'fieldsCovered',
+      'reports', 'reportDays', 'missedDays',
+      'mappedStages', 'totalStages', 'stagePhotos',
+    ];
+    const sumOf = (byNode, field) =>
+      Object.values(byNode).reduce((t, n) => t + (Number(n[field]) || 0), 0);
+
+    for (const f of METRIC_FIELDS) {
+      const bad = [];
+      for (const [id, s] of Object.entries(sM.byNode)) {
+        const m = mM.byNode[id];
+        if (!m) continue;
+        const sv = s[f] === null || s[f] === undefined ? null : Number(s[f]);
+        const mv = m[f] === null || m[f] === undefined ? null : Number(m[f]);
+        if (String(sv) !== String(mv)) bad.push(`${id.slice(0, 8)} ${sv}!=${mv}`);
+      }
+      cmp(
+        'metrics.' + f,
+        `${sumOf(sM.byNode, f)} (${bad.length} bad)`,
+        `${sumOf(mM.byNode, f)} (0 bad)`,
+        { note: bad[0] }
+      );
+    }
+
+    // Milestone bars, per milestone key, across all nodes in scope.
+    for (const key of ['m1', 'm2', 'm3', 'm4']) {
+      const pick = (byNode, part) =>
+        Object.values(byNode).reduce((t, n) => {
+          const ms = (n.milestones || []).find((x) => x.key === key);
+          return t + (ms && Number(ms[part]) ? Number(ms[part]) : 0);
+        }, 0);
+      cmp(`milestone.${key} done/total`,
+        `${pick(sM.byNode, 'done')}/${pick(sM.byNode, 'total')}`,
+        `${pick(mM.byNode, 'done')}/${pick(mM.byNode, 'total')}`);
+    }
+
+    const mappedCount = (byNode) => Object.values(byNode).filter((n) => n.milestonesMapped).length;
+    cmp('metrics.milestonesMapped', mappedCount(sM.byNode), mappedCount(mM.byNode));
+
     console.log('');
   }
 
   console.log('----------------------------------------------------------');
-  console.log(failures === 0
-    ? `ALL ${checks} CHECKS MATCH`
-    : `${failures} of ${checks} checks DIFFER`);
+  console.log(`${checks} checks: ${checks - failures - expected} match, ` +
+    `${expected} expected divergence (xdiff), ${failures} UNEXPECTED`);
+  if (expected) {
+    console.log('');
+    console.log('expected divergences -- MongoDB is the correct side:');
+    for (const [k, why] of Object.entries(EXPECTED_DIFFS)) console.log('  ' + k.padEnd(28) + why);
+  }
+  console.log('');
+  console.log(failures === 0 ? 'PASS -- no unexpected differences.' : 'FAIL -- see DIFF rows above.');
 
   await sfDb.close().catch(() => {});
   await mgDb.close().catch(() => {});
