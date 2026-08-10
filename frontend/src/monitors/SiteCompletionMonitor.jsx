@@ -31,6 +31,7 @@ const EMPTY_TRACK = '#2A3142';
 /** Filter pills use the same three words as the STATUS column. */
 const ITEM_FILTERS = ['All', 'Complete', 'Missing', 'N/A'];
 
+
 /** m1 < m2 < m3 < m4 < unmapped, so unmapped stages read as an appendix. */
 function milestoneRank(key) {
   return key ? Number(String(key).replace(/[^0-9]/g, '')) || 99 : 99;
@@ -187,7 +188,25 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    * than 0%, so a node is never shown as behind on something unmeasurable.
    */
   const liveMs = live?.metrics || null;
-  const checklist = live?.checklist || null;
+
+  /**
+   * The table and its stat cards show ONLY items mapped to M1-M4.
+   *
+   * The payload also carries items with no milestone -- COP-Documents, the
+   * tracker, daily report forms, and every stage on a non-ILA template -- but
+   * those are excluded here by request, so the table is strictly milestone work.
+   *
+   * CONSEQUENCE, deliberate: a node whose template has no M1-M4 stages shows an
+   * EMPTY table. On ARGONNE-CAMPUS (a DAS node, floors not shelters) all 11 items
+   * are unmapped, so nothing is listed. Wadley drops from 20 rows to 12.
+   *
+   * The cards count from this same filtered set, so a card can never disagree
+   * with the list beneath it.
+   */
+  const checklist = useMemo(() => {
+    const all = live?.checklist || null;
+    return all ? all.filter((i) => Boolean(i.milestone)) : null;
+  }, [live]);
 
   const milestoneView = useMemo(() => {
     if (!liveMs) return null;
@@ -646,10 +665,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             {visibleItems.length} of {checklist.length} documents shown ·{' '}
             {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
             {checklist.filter((i) => i.status === 'missing').length} Missing,{' '}
-            {checklist.filter((i) => i.status === 'na').length} N/A · Complete means evidence
-            exists (photos for a photo list, a submission for a form), not sign-off. N/A is
-            inferred &mdash; the warehouse carries no N/A flag &mdash; from items the checklist
-            marks conditional or does not require of this node.
+            {checklist.filter((i) => i.status === 'na').length} N/A · Only items mapped to
+            M1&ndash;M4 are listed. Complete means evidence exists (photos for a photo list, a
+            submission for a form), not sign-off. Item-level N/A is inferred from wording such as
+            &ldquo;if applicable&rdquo;; the per-field N/A flag behind the coverage figure above is
+            real (<code>ProgressStats.n_a</code>).
           </>
         ) : (
           <>
