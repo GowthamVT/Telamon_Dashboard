@@ -2,13 +2,15 @@
  * Operational endpoints: health, cache and pool visibility, sync status, and a
  * manual cache-invalidation hook.
  *
- * /health is intentionally cheap and does NOT touch Snowflake, so a load
- * balancer probe cannot spin up the warehouse. /health/snowflake does the real
- * round trip.
+ * /health is intentionally cheap and touches neither source, so a load balancer
+ * probe cannot spin up the Snowflake warehouse or add load to the MongoDB
+ * cluster. /health/source does the real round trip against whichever source is
+ * active; /health/snowflake and /health/mongo force a specific one.
  */
 const express = require('express');
 const config = require('../config/env');
 const sf = require('../db/snowflake');
+const mongo = require('../db/mongo');
 const cache = require('../cache/queryCache');
 const dashboard = require('../config/dashboard');
 const freshness = require('../sync/freshnessWatcher');
@@ -24,10 +26,49 @@ router.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     env: config.env,
+    // WHICH SOURCE IS SERVING. On the cheap probe deliberately: during the
+    // migration "is it on Mongo yet?" must be answerable without a round trip.
+    source: config.mongo.enabled ? 'mongodb' : 'snowflake',
     configured: dashboard.isConfigured(),
     uptimeSeconds: Math.round(process.uptime()),
   });
 });
+
+/** Round trip against whichever source is actually serving the monitors. */
+router.get(
+  '/health/source',
+  handle(async () => {
+    const started = Date.now();
+    if (config.mongo.enabled) {
+      const info = await mongo.ping();
+      return {
+        status: 'ok',
+        source: 'mongodb',
+        latencyMs: Date.now() - started,
+        session: info,
+        pool: mongo.poolStats(),
+      };
+    }
+    const session = await sf.ping();
+    return {
+      status: 'ok',
+      source: 'snowflake',
+      latencyMs: Date.now() - started,
+      session,
+      pool: sf.poolStats(),
+    };
+  })
+);
+
+/** Real MongoDB round trip. */
+router.get(
+  '/health/mongo',
+  handle(async () => {
+    const started = Date.now();
+    const info = await mongo.ping();
+    return { status: 'ok', latencyMs: Date.now() - started, session: info, pool: mongo.poolStats() };
+  })
+);
 
 /** Real Snowflake round trip -- confirms key-pair auth still works. */
 router.get(
@@ -42,7 +83,18 @@ router.get(
 router.get('/status', (req, res) => {
   res.json({
     env: config.env,
+    /** The active source for the monitor endpoints. */
+    source: config.mongo.enabled ? 'mongodb' : 'snowflake',
     configured: dashboard.isConfigured(),
+    mongo: {
+      enabled: config.mongo.enabled,
+      database: config.mongo.database || null,
+      // Host only -- the URI embeds the password and must never be echoed.
+      host: config.mongo.uri
+        ? String(config.mongo.uri).replace(/^mongodb(\+srv)?:\/\/[^@]*@/, '').split(/[/?]/)[0]
+        : null,
+      pool: mongo.poolStats(),
+    },
     snowflake: {
       account: config.snowflake.account,
       database: config.snowflake.database,

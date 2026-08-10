@@ -6,6 +6,7 @@ const { createApp } = require('./app');
 const config = require('./config/env');
 const logger = require('./util/logger');
 const sf = require('./db/snowflake');
+const mongo = require('./db/mongo');
 const dashboard = require('./config/dashboard');
 const freshness = require('./sync/freshnessWatcher');
 
@@ -36,7 +37,10 @@ async function shutdown(signal) {
 
   freshness.stop();
   server.close(async () => {
+    // Close both: either may hold an open pool regardless of the flag,
+    // since scripts and health probes can touch the inactive one.
     await sf.close();
+    await mongo.close();
     logger.info('Shutdown complete');
     process.exit(0);
   });

@@ -19,8 +19,21 @@
 const config = require('../config/env');
 const logger = require('../util/logger');
 const sf = require('../db/snowflake');
+const mongoDb = require('../db/mongo');
 const cache = require('../cache/queryCache');
 const dashboard = require('../config/dashboard');
+
+/**
+ * Collections the monitors read. Fingerprinting these is what tells us the
+ * source changed when MongoDB is the active source.
+ */
+const MONGO_WATCHED = [
+  'SmallCellNode',
+  'FormGroup',
+  'FormBuilderQuestions',
+  'FormBuilderAnswers',
+  'FieldMedia',
+];
 
 let timer = null;
 let lastFingerprint = null;
@@ -34,6 +47,30 @@ let state = {
   lastError: null,
   strategy: null,
 };
+
+/**
+ * MongoDB fingerprint: document counts across the collections the monitors read.
+ *
+ * estimatedDocumentCount() reads collection metadata rather than scanning, so
+ * this stays cheap even against multi-million-document collections and adds no
+ * meaningful load to the cluster the field portal runs on.
+ *
+ * KNOWN LIMIT: counts detect inserts and deletes, not in-place updates. A photo
+ * whose approvalStatus flips from null to Approved changes no count, so that is
+ * picked up when the cache entry expires rather than immediately.
+ * CACHE_TTL_SECONDS (300 by default) is therefore the real staleness bound; this
+ * watcher shortens it for the common case of new photos and new reports.
+ */
+async function computeMongoFingerprint() {
+  state.strategy = 'mongo-collection-counts';
+  const db = await mongoDb.getDb();
+  const parts = [];
+  for (const name of MONGO_WATCHED) {
+    const n = await db.collection(name).estimatedDocumentCount();
+    parts.push(name + ':' + n);
+  }
+  return 'mongo:' + parts.join('|');
+}
 
 async function computeFingerprint(descriptor) {
   const isView = String(descriptor.generatedFrom?.type || 'BASE TABLE')
@@ -73,11 +110,20 @@ async function computeFingerprint(descriptor) {
 
 /** One poll cycle. Exported so it can be triggered manually or from a test. */
 async function checkOnce({ invalidate = true } = {}) {
-  const descriptor = dashboard.load();
   state.checks += 1;
   state.lastCheckedAt = new Date().toISOString();
 
-  const fingerprint = await computeFingerprint(descriptor);
+  /*
+   * The Snowflake path needs dashboard.config.json, produced by
+   * `npm run introspect`. That descriptor has never existed in this project, so
+   * every Snowflake tick failed with "Dashboard is not configured yet" and the
+   * cache was only ever bounded by its TTL. The MongoDB path needs no descriptor
+   * -- it fingerprints the collections the monitors actually read -- so
+   * freshness works for the first time once MONGO_ENABLED is on.
+   */
+  const fingerprint = config.mongo.enabled
+    ? await computeMongoFingerprint()
+    : await computeFingerprint(dashboard.load());
   const changed = lastFingerprint !== null && fingerprint !== lastFingerprint;
   const first = lastFingerprint === null;
   lastFingerprint = fingerprint;
@@ -103,8 +149,9 @@ async function tick() {
   } catch (err) {
     state.errors += 1;
     state.lastError = err.message;
-    // Never let a transient Snowflake/config error kill the interval; the next
-    // tick retries. A missing descriptor is expected before `npm run introspect`.
+    // Never let a transient source/config error kill the interval; the next tick
+    // retries. A missing descriptor is expected on the Snowflake path before
+    // `npm run introspect`.
     logger.warn(`Freshness check failed: ${err.message}`);
   }
 }
