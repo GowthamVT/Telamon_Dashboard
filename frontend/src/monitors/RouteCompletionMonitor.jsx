@@ -153,11 +153,13 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           <HeroFigure
             pct={totals.photoPct === null ? 0 : totals.photoPct}
             color={pctColor(totals.photoPct === null ? 0 : totals.photoPct)}
-            caption={
-              totals.photoDefined
-                ? `PHOTO FIELDS COVERED (${totals.photoCovered}/${totals.photoDefined})`
-                : 'ROUTE AVG. PHOTO COMPLETION'
-            }
+            /*
+             * Label only -- the raw counts used to be appended here
+             * ("(4379/24091)") and read as clutter at company scope. The
+             * per-node PHOTOS column and its tooltip still carry the numbers for
+             * anyone who needs to audit the percentage.
+             */
+            caption={totals.photoDefined ? 'PHOTO FIELDS COVERED' : 'ROUTE AVG. PHOTO COMPLETION'}
           />
           <div className="mon-hero-right">
             <CountBreakdown

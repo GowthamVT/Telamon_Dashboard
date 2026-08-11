@@ -70,7 +70,18 @@ export default function MonitorApp({ initialView = 'site' }) {
         error={hierarchy.error}
       />
 
-      {/* Never let a live figure and a placeholder look equally trustworthy. */}
+      {/*
+        Only the states the reader must act on.
+        The steady-state "Partially live" banner is gone: it listed what was and
+        was not sourced, and had drifted out of date twice -- it still named
+        CLOUD_ECSITE_S3DOCUMENT and claimed the N/A flag was unsourced after both
+        had changed. A caveat that goes stale is worse than none, and the
+        remaining ones now live next to the figures they qualify.
+
+        The error state stays. A live figure and a placeholder must never look
+        equally trustworthy, so the reader has to be told when they are seeing
+        sample data.
+      */}
       {error ? (
         <div className="mon-notice" style={{ borderLeftColor: '#F0576E' }}>
           <div>
@@ -82,23 +93,10 @@ export default function MonitorApp({ initialView = 'site' }) {
         <div className="mon-notice">
           <div>
             <strong>Loading live Telamon data…</strong>
-            Querying <code>ECSITE.ANALYTICS</code>.
+            Querying the ECSite MongoDB cluster.
           </div>
         </div>
-      ) : (
-        <div className="mon-notice" style={{ borderLeftColor: '#34E0A1' }}>
-          <div>
-            <strong>Partially live</strong>
-            <span style={{ color: '#34E0A1' }}>LIVE:</span> header names, start date, company, the
-            Company&nbsp;›&nbsp;Site&nbsp;›&nbsp;Node hierarchy, the status KPI (company-level — it
-            does not shrink as you drill), photo fields and counts, daily reports, missed report
-            days, and milestones M2&ndash;M4 with their checklist stages.{' '}
-            <span style={{ color: '#F5B133' }}>Not sourced:</span> M1 CD&nbsp;Drawings and the
-            document checklist (<code>CLOUD_ECSITE_S3DOCUMENT</code> is empty), the N/A field flag,
-            and the M1&ndash;M4 mapping for nodes on non-standard checklist templates.
-          </div>
-        </div>
-      )}
+      ) : null}
 
       <Active live={live} />
     </div>
