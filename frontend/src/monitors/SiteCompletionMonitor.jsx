@@ -396,7 +396,15 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       { label: 'Ignored', value: n(liveMs.ignoredMedia) },
       { label: 'Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
       { label: 'Media', value: n(liveMs.photos) },
-      { label: 'Not applicable', value: n(liveMs.naFields), color: '#9098A9' },
+      /*
+       * "(photo fields)" is load-bearing, not decoration.
+       *
+       * The tracker task cards also carry an N/A, and the two are different
+       * quantities -- 69 photo fields marked N/A here, 0 tracker tasks without a
+       * recorded date there. Two bare "N/A"s showing different numbers on one screen
+       * reads as a contradiction, so this one names what it counts.
+       */
+      { label: 'Not applicable (photo fields)', value: n(liveMs.naFields), color: '#9098A9', wide: true },
       { label: 'Fields w/o media', value: n(liveMs.incompleteFields) },
     ];
   }, [liveMs]);
@@ -704,7 +712,10 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         {mediaFigures ? (
           <div className="mon-media">
             {mediaFigures.map((f) => (
-              <div className="mon-media-item" key={f.label}>
+              <div
+                className={f.wide ? 'mon-media-item mon-media-item--wide' : 'mon-media-item'}
+                key={f.label}
+              >
                 <p className="mon-media-num" style={f.color ? { color: f.color } : undefined}>
                   {f.value}
                 </p>
