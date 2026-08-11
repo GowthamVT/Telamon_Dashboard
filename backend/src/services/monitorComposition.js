@@ -108,7 +108,12 @@ async function composeSiteMonitor(scope, deps) {
   let metrics = null;
   let stages = null;
   let checklist = null;
-  let tracker = null;
+  /*
+   * [] rather than null, so a scope matching no node still SENDS the field.
+   * Null read as "no tracker support in this response", which the UI must treat as
+   * a version skew rather than as data. An empty array is the data.
+   */
+  let tracker = [];
 
   if (selected && !aggregate) {
     const nodeScope = { ...deps.companyScopeOf(scope), nodeId: selected.nodeId };

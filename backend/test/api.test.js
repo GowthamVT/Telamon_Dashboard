@@ -267,6 +267,23 @@ test('milestones with no tracker tasks report pct null, never 0%', async () => {
   }
 });
 
+test('tracker is always an array, never null or absent', async () => {
+  /*
+   * The frontend distinguishes "tracker: []" (the client has not filled it in)
+   * from a MISSING tracker field (the server is older than the page). Sending null
+   * or omitting it makes the honest-empty case look like a version skew, and it is
+   * what let the sample data reach the table once already.
+   */
+  for (const url of [
+    '/api/monitor/site',
+    `/api/monitor/site?nodeId=${NODE_ID}`,
+    '/api/monitor/site?nodeId=no-such-node',
+  ]) {
+    const { body } = await request(url);
+    assert.ok(Array.isArray(body.tracker), `${url} must send an array, got ${body.tracker}`);
+  }
+});
+
 test('aggregate scope yields name:null so the header cannot claim one node', async () => {
   const { body } = await request('/api/monitor/site');
   assert.equal(body.site.aggregate, true);

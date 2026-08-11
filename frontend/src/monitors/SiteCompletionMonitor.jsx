@@ -189,15 +189,40 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    * one, so almost every node shows nothing. That is the honest state: the client
    * has not used the tracker, and the portal agrees -- Basile reads
    * "TELAMON-ILA-TRACKER (0)".
+   *
+   * NEVER FALL BACK TO THE MOCK. `live.tracker` can be absent -- a stale server
+   * process, a scope that matches no node, a deploy skew between the two halves.
+   * `live?.tracker || null` returned null in those cases, which made the table
+   * render loadSiteMonitor()'s SAMPLE rows: "CD Approved -- Complete" and friends,
+   * indistinguishable on screen from real work. An empty live table is honest; a
+   * fabricated full one is not. So the mock is reachable only when there is no
+   * live payload at all, i.e. the standalone design preview.
    */
   const checklist = useMemo(() => {
-    const all = live?.tracker || null;
-    return all ? all.filter((t) => !t.isSectionHeader) : null;
+    if (!live) return null;
+    return (live.tracker || []).filter((t) => !t.isSectionHeader);
   }, [live]);
 
+  /**
+   * The payload carried no `tracker` field at all.
+   *
+   * Different from an empty tracker, and worth saying so: an empty tracker is the
+   * data telling the truth, whereas a missing field means the API answering is
+   * older than this page -- a server that was not restarted, or a half-finished
+   * deploy. Reporting "the client has not filled in the tracker" there would state
+   * something about the data that we have not actually been told.
+   */
+  const trackerAbsent = Boolean(live) && live.tracker === undefined;
+
   const milestoneView = useMemo(() => {
-    if (!liveMs) return null;
-    const items = liveMs.milestones || [];
+    // Same rule as the table: once there is a live payload the mock is off the
+    // table, so a missing `metrics` shows "--" rather than the sample's 100%/75%.
+    if (!live) return null;
+    // With no metrics, still name the milestones from the payload's own defs so the
+    // card shows M1..M5 at "--" instead of collapsing to a blank strip.
+    const items =
+      liveMs?.milestones ||
+      (live.milestoneDefs || []).map((d) => ({ ...d, pct: null, done: 0, total: 0, inProgress: 0 }));
     const measurable = items.filter((m) => m.pct !== null && m.pct !== undefined);
     // Pooled across TASKS, not a mean of percentages: M4 holds 124 tracker tasks
     // and M5 holds 2, so averaging their percentages would over-weight M5 by 60x.
@@ -216,9 +241,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       inProgress: measurable.filter((m) => (m.pct > 0 && m.pct < 100) || (m.pct === 0 && m.inProgress > 0))
         .length,
       notStarted: measurable.filter((m) => m.pct === 0 && !m.inProgress).length,
-      mapped: liveMs.milestonesMapped !== false,
+      mapped: Boolean(liveMs) && liveMs.milestonesMapped !== false,
     };
-  }, [liveMs]);
+  }, [live, liveMs]);
 
   /** Tracker tasks for the table, driven by the filter controls above it. */
   const visibleItems = useMemo(() => {
@@ -271,7 +296,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    * to question ids, and because the N/A flag has no source to exclude.
    */
   const photoBar = useMemo(() => {
-    if (!liveMs) {
+    // The sample is reachable only with no live payload at all. A live payload
+    // whose metrics are missing shows "--", never the sample's figures.
+    if (!live) {
       const pct = percent(data.photos.uploaded, data.photos.total);
       return {
         pct,
@@ -280,6 +307,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         note: null,
       };
     }
+    if (!liveMs) return { pct: 0, color: '#5A6478', label: '--', note: null };
     const pct = liveMs.photoPct ?? 0;
     /*
      * The denominator must be the SAME one the percentage used. It excludes N/A
@@ -296,7 +324,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       // covered/applicable and the percentage.
       note: null,
     };
-  }, [liveMs, data.photos, overallStatus]);
+  }, [live, liveMs, data.photos, overallStatus]);
 
   /**
    * Daily reports for this node.
@@ -308,13 +336,16 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    * and shows "--" rather than a fabricated zero.
    */
   const reportsCard = useMemo(() => {
-    if (!liveMs) {
+    if (!live) {
       return {
         submitted: data.reports.submitted,
         submittedNote: null,
         missedDays: data.reports.missedDays,
         missedNote: null,
       };
+    }
+    if (!liveMs) {
+      return { submitted: null, submittedNote: null, missedDays: null, missedNote: null };
     }
     const days = liveMs.reportDays;
     return {
@@ -336,7 +367,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           ? 'no reporting window'
           : null,
     };
-  }, [liveMs, data.reports]);
+  }, [live, liveMs, data.reports]);
 
   /**
    * The stat cards, counted from the SAME checklist rows the table renders, so a
@@ -605,7 +636,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           </div>
           <div className="mon-pr-side">
             <div>
-              <p className="mon-pr-num">{reportsCard.submitted}</p>
+              <p className="mon-pr-num">{reportsCard.submitted === null ? '--' : reportsCard.submitted}</p>
               <p className="mon-pr-sub">Daily reports submitted</p>
               {reportsCard.submittedNote ? (
                 <p className="mon-cell-sub">{reportsCard.submittedNote}</p>
@@ -683,9 +714,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 applied. Saying "no tasks match your filters" there would blame the
                 reader for a property of the data.
               */}
-              {visibleItems && checklist && checklist.length === 0
-                ? 'No TELAMON-ILA-TRACKER entries for this selection. The tracker is where the client records M1–M5 tasks, and it has not been filled in here — the portal shows the same: "TELAMON-ILA-TRACKER (0)".'
-                : 'No tasks match your filters.'}
+              {!visibleItems || (checklist && checklist.length > 0)
+                ? 'No tasks match your filters.'
+                : trackerAbsent
+                  ? 'This API response carried no tracker data, so nothing can be listed. The server is running an older build than this page — restart the backend.'
+                  : 'No TELAMON-ILA-TRACKER entries for this selection. The tracker is where the client records M1–M5 tasks, and it has not been filled in here — the portal shows the same: "TELAMON-ILA-TRACKER (0)".'}
             </div>
           ) : null}
         </div>
