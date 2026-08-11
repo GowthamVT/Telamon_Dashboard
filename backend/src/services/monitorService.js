@@ -1378,6 +1378,8 @@ async function getSiteMonitor(scope = {}) {
     getNodeMetrics,
     getNodeStages,
     getNodeChecklist,
+    getNodeTracker,
+    milestonesFromTracker,
     companyScopeOf,
   });
 }

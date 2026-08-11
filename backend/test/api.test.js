@@ -237,7 +237,7 @@ test('an unknown company pattern matches nothing rather than everything', async 
   }
 });
 
-test('GET /api/monitor/site returns header, metrics, stages and checklist', async () => {
+test('GET /api/monitor/site returns header, metrics, stages, checklist and tracker', async () => {
   const { status, body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
   assert.equal(status, 200);
   assert.equal(body.site.name, 'Test Node');
@@ -245,7 +245,26 @@ test('GET /api/monitor/site returns header, metrics, stages and checklist', asyn
   assert.ok(body.metrics, 'metrics present');
   assert.ok(Array.isArray(body.stages));
   assert.ok(Array.isArray(body.checklist));
-  assert.equal(body.milestoneDefs.length, 4);
+  assert.ok(Array.isArray(body.tracker), 'tracker present -- the table reads from it');
+  // Five, not four: TELAMON-ILA-TRACKER carries M1..M5. The retired stage-name
+  // model only had four, so this number changing is the point of the switch.
+  assert.equal(body.milestoneDefs.length, 5);
+  assert.deepEqual(
+    body.milestoneDefs.map((m) => m.label),
+    ['M1', 'M2', 'M3', 'M4', 'M5']
+  );
+});
+
+test('milestones with no tracker tasks report pct null, never 0%', async () => {
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  // The stub returns no tracker rows, which is also the real state on 201 of 202
+  // nodes. "No data" must not render as "no progress".
+  assert.equal(body.tracker.length, 0);
+  assert.equal(body.metrics.milestonesMapped, false);
+  for (const m of body.metrics.milestones) {
+    assert.equal(m.pct, null, `${m.label} must be null, not 0`);
+    assert.equal(m.total, 0);
+  }
 });
 
 test('aggregate scope yields name:null so the header cannot claim one node', async () => {

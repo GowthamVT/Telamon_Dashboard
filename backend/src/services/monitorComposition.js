@@ -11,6 +11,7 @@
  * while the picker said "All sites" -- and it should never exist in two places.
  */
 const { MILESTONES } = require('../config/milestones');
+const { TRACKER_MILESTONES } = require('../config/tracker');
 
 /**
  * Route Monitor payload.
@@ -107,28 +108,50 @@ async function composeSiteMonitor(scope, deps) {
   let metrics = null;
   let stages = null;
   let checklist = null;
+  let tracker = null;
 
   if (selected && !aggregate) {
-    // One node: unchanged.
     const nodeScope = { ...deps.companyScopeOf(scope), nodeId: selected.nodeId };
-    const [m, st, c] = await Promise.all([
+    const [m, st, c, tr] = await Promise.all([
       deps.getNodeMetrics(nodeScope),
       deps.getNodeStages(nodeScope),
       deps.getNodeChecklist(nodeScope),
+      deps.getNodeTracker(nodeScope),
     ]);
     metrics = m.byNode[selected.nodeId] || null;
     stages = st.byNode[selected.nodeId] || [];
     checklist = c.byNode[selected.nodeId] || [];
+    tracker = tr.byNode[selected.nodeId] || [];
   } else if (selected) {
-    // Whole scope, pooled.
-    const [m, st, c] = await Promise.all([
+    const [m, st, c, tr] = await Promise.all([
       deps.getNodeMetrics(scope),
       deps.getNodeStages(scope),
       deps.getNodeChecklist(scope),
+      deps.getNodeTracker(scope),
     ]);
     metrics = poolMetrics(m.byNode);
     stages = poolStages(st.byNode);
     checklist = poolChecklist(c.byNode);
+    tracker = poolTracker(tr.byNode);
+  }
+
+  /*
+   * MILESTONES COME FROM THE TRACKER, not from photo stages.
+   *
+   * TELAMON-ILA-TRACKER is the client's own definition -- Task ID, Task,
+   * Milestone, and a real sign-off chain (Final Complete Date, Lumen
+   * Accept/Reject). The previous model mapped photolist STAGE NAMES to milestones
+   * using a rule written in our own config, which was never the client's.
+   *
+   * The consequence is deliberate and visible: the tracker has been filled in on
+   * exactly one node and holds no completion dates even there, so milestones read
+   * "--" or 0% almost everywhere. That is the honest state of the data, and it is
+   * preferable to a number derived from a rule the client never agreed.
+   */
+  if (metrics) {
+    metrics.milestones = deps.milestonesFromTracker(tracker);
+    metrics.milestonesMapped = (tracker || []).some((t) => !t.isSectionHeader && t.milestone);
+    metrics.trackerTasks = (tracker || []).filter((t) => !t.isSectionHeader).length;
   }
 
   return {
@@ -156,14 +179,20 @@ async function composeSiteMonitor(scope, deps) {
     metrics,
     stages,
     checklist,
-    /** Milestone definitions, so the UI can label bars without duplicating config. */
-    milestoneDefs: MILESTONES.map((m) => ({
+    /** TELAMON-ILA-TRACKER tasks -- the source for the table and the milestones. */
+    tracker,
+    /** M1..M5 definitions, so the UI can label bars without duplicating config. */
+    milestoneDefs: TRACKER_MILESTONES.map((m) => ({
+      key: m.key,
+      label: m.label,
+      name: m.name,
+    })),
+    /** Kept for reference: the retired stage-name mapping. */
+    legacyMilestoneDefs: MILESTONES.map((m) => ({
       key: m.key,
       label: m.label,
       name: m.name,
       stageCount: m.stages.length,
-      unmeasurable: m.unmeasurable === true,
-      reason: m.unmeasurableReason || null,
     })),
   };
 }
@@ -260,6 +289,58 @@ function poolMetrics(byNode) {
     photoPct: denominator > 0 ? Math.min(100, Math.round((fieldsCovered / denominator) * 100)) : null,
     photoPctApproximate: nodes.some((n) => n.photoPctApproximate),
   };
+}
+
+/**
+ * Tracker tasks pooled by Task ID across the scope.
+ *
+ * One row per distinct task, carrying how many nodes have it complete. Headings
+ * are dropped rather than pooled -- a heading repeated 63 times is still chrome.
+ */
+function poolTracker(byNode) {
+  const acc = new Map();
+  for (const list of Object.values(byNode)) {
+    for (const t of list) {
+      if (t.isSectionHeader) continue;
+      const key = t.taskId || t.task;
+      if (!acc.has(key)) {
+        acc.set(key, {
+          taskId: t.taskId,
+          task: t.task,
+          milestone: t.milestone,
+          responsibleParty: t.responsibleParty,
+          isSectionHeader: false,
+          aggregated: true,
+          nodeCount: 0,
+          completeCount: 0,
+          inProgressCount: 0,
+          notStartedCount: 0,
+          rejectedCount: 0,
+        });
+      }
+      const a = acc.get(key);
+      a.nodeCount += 1;
+      if (t.status === 'complete') a.completeCount += 1;
+      else if (t.status === 'inProgress') a.inProgressCount += 1;
+      else if (t.status === 'rejected') a.rejectedCount += 1;
+      else a.notStartedCount += 1;
+    }
+  }
+  return [...acc.values()]
+    .map((a) => ({
+      ...a,
+      status:
+        a.completeCount === a.nodeCount
+          ? 'complete'
+          : a.completeCount > 0 || a.inProgressCount > 0
+            ? 'inProgress'
+            : 'notStarted',
+    }))
+    .sort((x, y) => {
+      const kx = String(x.taskId || '').split('-').map(Number);
+      const ky = String(y.taskId || '').split('-').map(Number);
+      return (kx[0] || 999) - (ky[0] || 999) || (kx[1] || 999) - (ky[1] || 999);
+    });
 }
 
 /** Stages pooled by stage name: one row per distinct stage across the scope. */

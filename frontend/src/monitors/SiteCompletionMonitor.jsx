@@ -28,73 +28,54 @@ const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 /** Grey track for an unmeasurable value -- visually distinct from 0%, which is red. */
 const EMPTY_TRACK = '#2A3142';
 
-/** Filter pills use the same three words as the STATUS column. */
-const ITEM_FILTERS = ['All', 'Complete', 'Missing', 'N/A'];
+/** Filter pills use the same words as the STATUS column. */
+const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'Not Started'];
 
 
-/** m1 < m2 < m3 < m4 < unmapped, so unmapped stages read as an appendix. */
+/** m1 < m2 < m3 < m4 < m5 < unmapped, so unmapped tasks read as an appendix. */
 function milestoneRank(key) {
   return key ? Number(String(key).replace(/[^0-9]/g, '')) || 99 : 99;
 }
 
 /**
- * The three statuses the dashboard reports, and how each one looks.
+ * Tracker task statuses, and how each one looks.
  *
- * Deliberately the same presentation as the sample table it replaces, so the
- * column reads identically whether the data is live or not. Colour is never the
- * only signal -- the word and the icon ship with it.
+ * These come from the tracker's own sign-off chain -- Lumen Accept/Reject, Final
+ * Complete Date, then the partner and estimated dates -- not from "a photo
+ * exists". Colour is never the only signal; the word and the icon ship with it.
  */
 const ITEM_STATUS_PRESENTATION = {
   complete: { color: '#34E0A1', label: 'Complete', Icon: CircleCheck },
-  missing: { color: '#5A6478', label: 'Missing', Icon: Circle },
+  inProgress: { color: '#F5B133', label: 'In Progress', Icon: Circle },
+  notStarted: { color: '#5A6478', label: 'Not Started', Icon: Circle },
+  rejected: { color: '#F0576E', label: 'Rejected', Icon: CircleMinus },
+  // Retained so a stale payload cannot blank the column.
+  missing: { color: '#5A6478', label: 'Not Started', Icon: Circle },
   na: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
 };
 
-/** Human name for the form type behind an item. Unknown types say nothing. */
-const KIND_LABEL = {
-  photolist: 'photo list',
-  ondemand: 'form',
-  installTracker: 'tracker',
-  single: 'form',
-};
-
 /**
- * One row of the node's checklist (CLOUD_FORMGOUP_SS.LIST).
+ * One TELAMON-ILA-TRACKER task.
  *
- * STATUS is Complete / Missing / N/A, classified in the backend. The sub-label
- * carries the evidence behind that word -- photo counts, submission counts, the
- * last date -- so the status is always auditable from the row itself.
+ * The MILESTONE chip is the client's own assignment (their Milestone column, or
+ * the Task ID group where they left it blank). STATUS is their sign-off chain.
+ * Nothing here is derived from a rule of ours.
  */
 function ChecklistRow({ item }) {
-  const { color, label, Icon } = ITEM_STATUS_PRESENTATION[item.status]
-    || ITEM_STATUS_PRESENTATION.missing;
-  const isPhotos = item.kind === 'photolist';
+  const { color, label, Icon } =
+    ITEM_STATUS_PRESENTATION[item.status] || ITEM_STATUS_PRESENTATION.notStarted;
 
-  /*
-   * When the scope spans several nodes the row is a rollup, so the STATUS column
-   * shows "12 of 63 complete" rather than one word -- "Complete" cannot describe
-   * 63 nodes, some of which are and some of which are not.
-   */
   const rollup = item.aggregated === true && item.nodeCount > 1;
 
-  const evidence = isPhotos
-    ? item.photos > 0
-      ? `${item.photos} photos of ${item.photoFields} field${item.photoFields === 1 ? '' : 's'}`
-      : item.photoFields
-        ? `no photos against ${item.photoFields} field${item.photoFields === 1 ? '' : 's'}`
-        : null
-    : item.submissions > 0
-      ? `${item.submissions} submission${item.submissions === 1 ? '' : 's'}`
-      : 'no submissions';
-
   const detail = [
-    item.section,
-    KIND_LABEL[item.kind] || null,
+    item.taskId ? `Task ${item.taskId}` : null,
+    item.responsibleParty || null,
     rollup ? `across ${item.nodeCount} nodes` : null,
-    evidence,
-    item.lastPhoto ? `last photo ${item.lastPhoto}` : null,
-    !isPhotos && item.lastSubmission ? `last ${item.lastSubmission}` : null,
-    item.statusReason,
+    item.finalCompleteDate ? `final ${item.finalCompleteDate}` : null,
+    item.partnerCompleteDate ? `partner ${item.partnerCompleteDate}` : null,
+    item.lumenAcceptReject ? `Lumen: ${item.lumenAcceptReject}` : null,
+    !rollup && item.statusReason ? item.statusReason : null,
+    item.milestone && !item.milestoneExplicit ? 'milestone from Task ID' : null,
   ]
     .filter(Boolean)
     .join(' \u2014 ');
@@ -103,17 +84,12 @@ function ChecklistRow({ item }) {
     <div className="mon-grid mon-trow mon-trow--tight" role="row">
       <span className="mon-chip">{item.milestone ? item.milestone.toUpperCase() : '--'}</span>
       <div className="mon-doc">
-        <p className="mon-doc-label">
-          {item.position ? `${item.position}. ` : ''}
-          {item.name}
-        </p>
+        <p className="mon-doc-label">{item.task || item.taskId || '(untitled task)'}</p>
         {detail ? <p className="mon-doc-sub">{detail}</p> : null}
       </div>
       <div className="mon-docstatus" style={{ color }}>
         <Icon size={16} aria-hidden="true" />
-        <span>
-          {rollup ? `${item.completeCount} of ${item.nodeCount} complete` : label}
-        </span>
+        <span>{rollup ? `${item.completeCount} of ${item.nodeCount} complete` : label}</span>
       </div>
     </div>
   );
@@ -146,7 +122,11 @@ function DocumentRow({ item }) {
 }
 
 /**
- * Site Completion Monitor: milestone/document checklist for a single site.
+ * Site Completion Monitor: TELAMON-ILA-TRACKER tasks and milestones for a site.
+ *
+ * The table and the MILESTONE PROGRESS card both read the tracker, which is the
+ * client's own M1..M5 definition. Photo coverage and daily reports are separate
+ * cards fed by the photolist, and they are unaffected.
  *
  * Read-only by design. The reference mockup let the user upload files and toggle
  * N/A, persisting to localStorage -- but this dashboard is embedded in a
@@ -200,30 +180,27 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const liveMs = live?.metrics || null;
 
   /**
-   * The table and its stat cards show ONLY items mapped to M1-M4.
+   * The table lists TELAMON-ILA-TRACKER tasks.
    *
-   * The payload also carries items with no milestone -- COP-Documents, the
-   * tracker, daily report forms, and every stage on a non-ILA template -- but
-   * those are excluded here by request, so the table is strictly milestone work.
+   * Section headings are dropped -- ">>> Drawings Completed" and the column-owner
+   * label rows are grid chrome, not work.
    *
-   * CONSEQUENCE, deliberate: a node whose template has no M1-M4 stages shows an
-   * EMPTY table. On ARGONNE-CAMPUS (a DAS node, floors not shelters) all 11 items
-   * are unmapped, so nothing is listed. Wadley drops from 20 rows to 12.
-   *
-   * The cards count from this same filtered set, so a card can never disagree
-   * with the list beneath it.
+   * EXPECT EMPTY. The tracker is configured on 63 Telamon nodes and filled in on
+   * one, so almost every node shows nothing. That is the honest state: the client
+   * has not used the tracker, and the portal agrees -- Basile reads
+   * "TELAMON-ILA-TRACKER (0)".
    */
   const checklist = useMemo(() => {
-    const all = live?.checklist || null;
-    return all ? all.filter((i) => Boolean(i.milestone)) : null;
+    const all = live?.tracker || null;
+    return all ? all.filter((t) => !t.isSectionHeader) : null;
   }, [live]);
 
   const milestoneView = useMemo(() => {
     if (!liveMs) return null;
     const items = liveMs.milestones || [];
     const measurable = items.filter((m) => m.pct !== null && m.pct !== undefined);
-    // Pooled across stages, not a mean of percentages: M2 has 6 stages and M4
-    // has 2, so averaging their percentages would over-weight the small one.
+    // Pooled across TASKS, not a mean of percentages: M4 holds 124 tracker tasks
+    // and M5 holds 2, so averaging their percentages would over-weight M5 by 60x.
     const done = measurable.reduce((sum, m) => sum + (m.done || 0), 0);
     const total = measurable.reduce((sum, m) => sum + (m.total || 0), 0);
     return {
@@ -233,20 +210,25 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       stagesDone: done,
       stagesTotal: total,
       complete: measurable.filter((m) => m.pct === 100).length,
-      inProgress: measurable.filter((m) => m.pct > 0 && m.pct < 100).length,
-      notStarted: measurable.filter((m) => m.pct === 0).length,
+      // A milestone counts as in flight when work has been signed off part-way OR
+      // when a task carries a date but no completion -- the tracker distinguishes
+      // the two, so 0% does not automatically mean untouched.
+      inProgress: measurable.filter((m) => (m.pct > 0 && m.pct < 100) || (m.pct === 0 && m.inProgress > 0))
+        .length,
+      notStarted: measurable.filter((m) => m.pct === 0 && !m.inProgress).length,
       mapped: liveMs.milestonesMapped !== false,
     };
   }, [liveMs]);
 
-  /** Checklist rows for the table, driven by the filter controls above it. */
+  /** Tracker tasks for the table, driven by the filter controls above it. */
   const visibleItems = useMemo(() => {
     if (!checklist) return null;
     const q = query.trim().toLowerCase();
-    const WANTED = { Complete: 'complete', Missing: 'missing', 'N/A': 'na' };
+    const WANTED = { Complete: 'complete', 'In Progress': 'inProgress', 'Not Started': 'notStarted' };
 
     let out = checklist.filter((it) => {
-      if (q && !it.name.toLowerCase().includes(q)) return false;
+      const text = `${it.task || ''} ${it.taskId || ''}`.toLowerCase();
+      if (q && !text.includes(q)) return false;
       if (WANTED[status] && it.status !== WANTED[status]) return false;
       if (milestone !== 'All milestones' && (it.milestone || '').toUpperCase() !== milestone) {
         return false;
@@ -254,20 +236,26 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       return true;
     });
 
-    const rank = { complete: 0, missing: 1, na: 2 };
+    // Task IDs are "group-index", so sort them numerically, not as strings:
+    // "11-2" must follow "9-30", which a string sort gets wrong.
+    const taskKey = (t) => {
+      const parts = String(t.taskId || '').split('-');
+      return [Number(parts[0]) || 999, Number(parts[1]) || 999];
+    };
+    const byTaskId = (a, b) => {
+      const ka = taskKey(a);
+      const kb = taskKey(b);
+      return ka[0] - kb[0] || ka[1] - kb[1];
+    };
+
+    const rank = { complete: 0, inProgress: 1, notStarted: 2, rejected: 3 };
     if (sort === 'Status') {
-      out = [...out].sort(
-        (a, b) => rank[a.status] - rank[b.status] || (a.sequence ?? 999) - (b.sequence ?? 999)
-      );
+      out = [...out].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || byTaskId(a, b));
     } else if (sort === 'Name') {
-      out = [...out].sort((a, b) => a.name.localeCompare(b.name));
+      out = [...out].sort((a, b) => String(a.task).localeCompare(String(b.task)));
     } else {
-      // Milestone order, then the node's own checklist sequence within it.
       out = [...out].sort(
-        (a, b) =>
-          milestoneRank(a.milestone) - milestoneRank(b.milestone) ||
-          (a.sequence ?? 999) - (b.sequence ?? 999) ||
-          a.name.localeCompare(b.name)
+        (a, b) => milestoneRank(a.milestone) - milestoneRank(b.milestone) || byTaskId(a, b)
       );
     }
     return out;
@@ -381,25 +369,20 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     const complete = pooled
       ? checklist.reduce((t, i) => t + (i.completeCount || 0), 0)
       : checklist.filter((i) => i.status === 'complete').length;
-    const missing = pooled
-      ? checklist.reduce((t, i) => t + (i.missingCount || 0), 0)
-      : checklist.filter((i) => i.status === 'missing').length;
-    const na = pooled
-      ? checklist.reduce((t, i) => t + (i.naCount || 0), 0)
-      : checklist.filter((i) => i.status === 'na').length;
+    const inProgress = pooled
+      ? checklist.reduce((t, i) => t + (i.inProgressCount || 0), 0)
+      : checklist.filter((i) => i.status === 'inProgress').length;
+    const notStarted = total - complete - inProgress;
 
-    // N/A is excluded from the denominator: an item that does not apply should
-    // not count against the node.
-    const applicable = total - na;
     return {
       pooled,
-      /** Distinct document types, for the label when pooling. */
+      /** Distinct tasks, for the label when pooling. */
       types: checklist.length,
       total,
       complete,
-      missing,
-      na,
-      pct: applicable > 0 ? Math.round((complete / applicable) * 100) : null,
+      inProgress,
+      notStarted,
+      pct: total > 0 ? Math.round((complete / total) * 100) : null,
     };
   }, [checklist]);
 
@@ -409,21 +392,21 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const cards = docStats
     ? [
         {
-          label: isPooled ? 'DOCUMENT TYPES' : 'TOTAL DOCUMENTS',
+          label: isPooled ? 'TASKS' : 'TOTAL TASKS',
           value: isPooled ? docStats.types : docStats.total,
           color: '#F7F8FB',
         },
         {
-          label: 'UPLOADED %',
+          label: 'COMPLETE %',
           value: docStats.pct === null ? '--' : `${docStats.pct}%`,
           color: docStats.pct === null ? '#5A6478' : pctColor(docStats.pct),
         },
+        { label: 'IN PROGRESS', value: docStats.inProgress, color: '#F5B133' },
         {
-          label: 'MISSING',
-          value: docStats.missing,
-          color: docStats.missing > 0 ? DANGER : statusColor(STATUS.COMPLETE),
+          label: 'NOT STARTED',
+          value: docStats.notStarted,
+          color: docStats.notStarted > 0 ? DANGER : statusColor(STATUS.COMPLETE),
         },
-        { label: 'N/A', value: docStats.na, color: '#9098A9' },
         {
           label: 'MILESTONES DONE',
           value: milestoneView
@@ -552,9 +535,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             />
             <div className="mon-mrows">
               {(milestoneView ? milestoneView.items : summary.progress).map((m, i) => {
-                // pct === null means UNMEASURABLE, not zero -- M1 is document-based
-                // and CLOUD_ECSITE_S3DOCUMENT is empty. Render "--" on a grey track
-                // so an unsourced milestone is never read as "no progress made".
+                // pct === null means NO TRACKER TASKS for this milestone, not zero.
+                // Render "--" on a grey track so an unsourced milestone is never
+                // read as "no progress made".
                 const unmeasured = m.pct === null || m.pct === undefined;
                 return (
                   <div className="mon-mrow" key={m.key || m.id || i}>
@@ -578,8 +561,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                     <span className="mon-visually-hidden">
                       {m.name}:{' '}
                       {unmeasured
-                        ? m.note || 'not measurable from the available data'
-                        : `${m.done} of ${m.total} stages started`}
+                        ? m.note || 'no tracker tasks recorded for this milestone'
+                        : `${m.done} of ${m.total} tracker tasks complete`}
                     </span>
                   </div>
                 );
@@ -587,8 +570,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             </div>
             {milestoneView && !milestoneView.mapped ? (
               <p className="mon-cell-sub" style={{ marginTop: 10, color: '#F5A623' }}>
-                This node&rsquo;s checklist template is not mapped to M1&ndash;M4 yet, so milestone
-                percentages are withheld. The stage list below is still live.
+                No TELAMON-ILA-TRACKER tasks for this selection, so M1&ndash;M5 percentages are
+                withheld rather than shown as 0%. Milestones come from that tracker, which the
+                client has not filled in here. The photo stage list below is still live.
               </p>
             ) : null}
           </div>
@@ -654,7 +638,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <SearchBox
           value={query}
           onChange={setQuery}
-          placeholder="Search document name..."
+          placeholder={checklist ? 'Search task or Task ID...' : 'Search document name...'}
           icon={<Search size={15} color="#5A6478" aria-hidden="true" />}
         />
         <PillGroup
@@ -664,7 +648,12 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           label="Filter by status"
         />
         <Select value={milestone} onChange={setMilestone} options={milestoneOptions} label="Filter by milestone" />
-        <Select value={sort} onChange={setSort} options={SORT_OPTIONS} label="Sort documents by" />
+        <Select
+          value={sort}
+          onChange={setSort}
+          options={SORT_OPTIONS}
+          label={checklist ? 'Sort tasks by' : 'Sort documents by'}
+        />
       </div>
 
       <div className="mon-table">
@@ -673,30 +662,30 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <div className="mon-table-scroll" style={{ '--mon-cols': COLS, '--mon-min': '640px' }}>
           <div className="mon-grid mon-thead" role="row">
             <div role="columnheader">MILESTONE</div>
-            <div role="columnheader">DOCUMENT</div>
+            <div role="columnheader">TASK</div>
             <div role="columnheader">STATUS</div>
           </div>
 
           {visibleItems
             ? visibleItems.map((it, i) => (
-                /* formId is null on items with no backing form (Segment Sweep/PIM),
-                   so it cannot be the key on its own -- two such rows collide. */
-                <ChecklistRow key={`${it.formId || 'no-form'}:${it.sequence ?? i}:${it.name}`} item={it} />
+                /* answerSetId is unique per task row, but pooled rows have none, so
+                   fall back to the Task ID and finally the index. */
+                <ChecklistRow key={`${it.answerSetId || it.taskId || 'row'}:${i}`} item={it} />
               ))
             : visible.map((item) => <DocumentRow key={item.id} item={item} />)}
 
           {(visibleItems || visible).length === 0 ? (
             <div className="mon-empty-row">
               {/*
-                Distinguish "your filters excluded everything" from "this node has
-                nothing to list". The table shows only M1-M4 items, so a node on a
-                non-ILA template is empty before any filter is applied -- saying
-                "no documents match your filters" there blames the reader for a
-                property of the data.
+                Distinguish "your filters excluded everything" from "there is nothing
+                here at all". The second case is the COMMON one: the tracker is empty
+                on almost every node, so the table is blank before any filter is
+                applied. Saying "no tasks match your filters" there would blame the
+                reader for a property of the data.
               */}
               {visibleItems && checklist && checklist.length === 0
-                ? "None of this node's checklist items are mapped to M1–M4, so there is nothing to list."
-                : 'No documents match your filters.'}
+                ? 'No TELAMON-ILA-TRACKER entries for this selection. The tracker is where the client records M1–M5 tasks, and it has not been filled in here — the portal shows the same: "TELAMON-ILA-TRACKER (0)".'
+                : 'No tasks match your filters.'}
             </div>
           ) : null}
         </div>
@@ -705,10 +694,10 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       <p className="mon-foot">
         {visibleItems ? (
           <>
-            {visibleItems.length} of {checklist.length} documents shown ·{' '}
+            {visibleItems.length} of {checklist.length} tracker tasks shown ·{' '}
             {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
-            {checklist.filter((i) => i.status === 'missing').length} Missing,{' '}
-            {checklist.filter((i) => i.status === 'na').length} N/A
+            {checklist.filter((i) => i.status === 'inProgress').length} In Progress,{' '}
+            {checklist.filter((i) => i.status === 'notStarted').length} Not Started
           </>
         ) : (
           <>
