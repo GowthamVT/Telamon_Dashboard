@@ -1,116 +1,178 @@
 /**
- * Completion Monitor data service.
+ * Completion Monitor data service -- MongoDB source.
  *
- * Sources (verified against the live schema, not assumed):
- *   ECSITE.ANALYTICS.CLOUD_NODE
- *     "companyId" "siteId" "nodeId" (join/RLS keys, case-sensitive quoted)
- *     "Company Name" "Site Name" (= route) "Node Name" (= site) "Node Start Date"
- *   ECSITE.ANALYTICS.CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS
- *     "companyId" "siteId" "Status" "Updated Date" "DATE"  -- SITE grain, no nodeId
+ * The single data source for both monitor dashboards. Previously this sat beside
+ * a Snowflake implementation behind a feature flag; that has been removed and
+ * MongoDB is now the only source.
  *
- * NOTE ON NAMING: the database's "Site Name" is what the dashboards call the
- * ROUTE, and "Node Name" is what they call the SITE. The mapping is consistent
- * (one Site Name contains many Node Names) but inverted from the UI vocabulary,
- * so every query below is explicit about which is which.
+ * -------------------------------------------------------------------------
+ * THE FLAT NODE ROW
+ *
+ * Node, site and company live in three collections with different shapes, so
+ * nodesInScope() joins them into one flat row and every query starts from it.
+ * (The retired Snowflake path read a pre-joined CLOUD_NODE table, which is why
+ * that join had to be rebuilt here.)
+ *
+ * VERIFIED FIELD MAPPING (checked against the live cluster, not assumed):
+ *   "nodeId"              SmallCellNode.nodeId
+ *   "Node Name"           SmallCellNode.nodeName
+ *   "Node Code"           SmallCellNode.nodeCode
+ *   "siteId"              SmallCellNode.siteId
+ *   "Site Name" (=route)  Site.siteName          -- NOT SmallCellNode.siteCode,
+ *                                                   which uses underscores
+ *   "companyId"           SmallCellNode.companyId
+ *   "Company Name"        Company.companyName
+ *   "Node Status"         SmallCellNode.nodeStatus.status   (nested object)
+ *   "Node Current Status" SmallCellNode.currentStatus
+ *   "Site Status"         Site.siteStatus.status
+ *   "Node Start Date"     SmallCellNode.nodeStartDate       (epoch ms)
+ *
+ * TRAPS, all of which cost real debugging time:
+ *   - `_id` is an ObjectId; the scalar id FIELDS (nodeId, siteId, companyId) are
+ *     strings. Joining a string field to `_id` silently returns nothing.
+ *   - Site joins on `siteIdList`. `Site.siteId` holds the CODE
+ *     (LUMEN_ILA_HOUSTON_ATLANTA), not an id.
+ *   - Filter SmallCellNode on the *List fields (nodeIdList / companyIdList):
+ *     those are indexed, the scalar equivalents are not.
+ *   - nodeStartDate is mixed double/long/null, so it needs a null guard before
+ *     $toDate or the whole pipeline errors on the nodes that lack one.
+ *   - Do NOT filter isDeleted on SmallCellNode: CLOUD_NODE does not either, and
+ *     3 soft-deleted Telamon OSP nodes are inside today's counts. Excluding them
+ *     would change 202 to 199 -- a data fix, but not part of a source swap.
+ * -------------------------------------------------------------------------
  */
-const sf = require('../db/snowflake');
+const mongo = require('../db/mongo');
 const cache = require('../cache/queryCache');
+
+/**
+ * Status and item-status rules live in config, not here: they are business rules
+ * rather than source data, and keeping them separate is what let the Snowflake
+ * adapter be deleted without touching any of them.
+ */
+const {
+  classifyStatus,
+  classifyItemStatus,
+  DEFAULT_COMPANY_PATTERN,
+} = require('../config/statusVocabulary');
+
+/**
+ * Milestone definitions. A business-rule mapping, not source data -- no
+ * collection in MongoDB carries a milestone field.
+ */
 const {
   MILESTONES,
   MAPPED_STAGES,
   MIN_MAPPED_STAGES,
+  /**
+   * normaliseStage and classifyStage come from the shared config, not a local
+   * copy. An identical-looking duplicate is exactly how the two adapters would
+   * drift: change the regex in one place and the same stage classifies
+   * differently depending on which source is serving.
+   */
+  normaliseStage,
   classifyStage,
 } = require('../config/milestones');
 
 /**
- * Header/payload assembly is shared with monitorMongoService: the aggregate and
- * `name: null` handling is subtle enough that two copies would drift.
+ * Header/payload assembly is shared with monitorService rather than copied. The
+ * aggregate and `name: null` handling was itself a bug fix; two copies means the
+ * next fix lands in one adapter only, and the symptom would be a wrong header
+ * that appears solely when MONGO_ENABLED is flipped.
  */
 const { composeRouteMonitor, composeSiteMonitor } = require('./monitorComposition');
 
-const NODE = '"ECSITE"."ANALYTICS"."CLOUD_NODE"';
-const SITE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_SITE_STATUS_HISTORY_WITH_COUNTS"';
-const NODE_HISTORY = '"ECSITE"."ANALYTICS"."CLOUD_NODE_STATUS_HISTORY_WITH_COUNTS"';
-/** Per-node checklist definition (SCD2 -- always filter DBT_VALID_TO IS NULL). */
-const FORMGROUP = '"ECSITE"."ANALYTICS"."CLOUD_FORMGOUP_SS"';
-/** Raw uploaded media. Match on NODEIDLIST, not the scalar NODEID -- see getNodeMetrics. */
-const FIELD_MEDIA = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FIELDMEDIA"';
-/** Form submissions, including the DAILY REPORT FORM. */
-const FORM_ANSWERS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERANSWERS"';
-/** Form definitions; LIST holds the questions (element='Photo' = a photo field). */
-const FORM_QUESTIONS = '"ECSITE"."RAW_HEVO"."CLOUD_ECSITE_FORMBUILDERQUESTIONS"';
-/**
- * Date dimension. "Day of Week" is ZERO-indexed: 0=Sunday .. 6=Saturday.
- * Verified against DAYNAME() -- an earlier comment here claimed 1=Sunday/7=Saturday
- * and the query filtered NOT IN (1,7), which excluded Mondays and kept every
- * weekend. No holiday flag exists, so public holidays still count as working days.
- */
-const CALENDAR = '"ECSITE"."ANALYTICS"."CALENDAR"';
-/**
- * Pre-aggregated photo counts per node/day.
- * Use PHOTOLISTENTRIES (photolist media, matches the portal), NOT PHOTOENTRIES
- * which counts all media and overstates -- 803 vs 593 for Wadley.
- */
-const PHOTOCOUNT = '"ECSITE"."ANALYTICS"."CLOUD_PHOTOCOUNT_PHOTOLIST_AGG"';
+const NODES = 'SmallCellNode';
+const SITES = 'Site';
+const COMPANIES = 'Company';
 
-/** Default tenant scope until RLS is wired. */
-const DEFAULT_COMPANY_PATTERN = '%Telamon%';
+/** Bucket for nodes with no status at all. */
+const NO_STATUS = '(no status history)';
 
 /**
  * -------------------------------------------------------------------------
  * THE RLS CHOKEPOINT.
  *
- * Every monitor query builds its WHERE clause here, so a per-user predicate
- * added in this one function is inherited by all of them automatically.
+ * The MongoDB equivalent of buildScope(). Every query filters through here, so
+ * a per-user predicate added in this one function is inherited by all of them.
  *
- * Today `companyPattern` defaults to '%Telamon%' -- an explicit, single-tenant
- * scope rather than "no filter", so the unrestricted case never silently
- * becomes the default. When auth lands, derive companyId/siteId/nodeId from the
- * authenticated principal and pass them in; the ILIKE fallback should then be
- * removed so a missing principal fails closed instead of returning everything.
+ * Today companyPattern defaults to Telamon -- an explicit single-tenant scope
+ * rather than "no filter", so the unrestricted case never becomes the default by
+ * accident. When auth lands, derive companyId/siteId/nodeId from the
+ * authenticated principal and pass them in; the name-pattern fallback should
+ * then be removed so a missing principal fails closed.
  *
- * All values are bind parameters. `alias` lets the same predicate apply to
- * either table, since both carry the id columns.
+ * Returns a $match stage. companyPattern needs the Company collection resolved
+ * first (names live there, not on the node), which resolveCompanyIds() does.
  * -------------------------------------------------------------------------
  */
-function buildScope({ companyPattern = DEFAULT_COMPANY_PATTERN, companyId, siteId, nodeId } = {}, { withNode = true } = {}) {
-  const clauses = [];
-  const binds = [];
+async function buildMatch({ companyPattern = DEFAULT_COMPANY_PATTERN, companyId, siteId, nodeId } = {}) {
+  const match = {};
 
   if (companyId) {
-    clauses.push('"companyId" = ?');
-    binds.push(companyId);
+    match.companyIdList = companyId;
   } else if (companyPattern) {
-    clauses.push('"Company Name" ILIKE ?');
-    binds.push(companyPattern);
+    const ids = await resolveCompanyIds(companyPattern);
+    // No match must return nothing, never everything.
+    match.companyIdList = { $in: ids.length ? ids : ['__no_company_matched__'] };
   }
 
-  if (siteId) {
-    clauses.push('"siteId" = ?');
-    binds.push(siteId);
-  }
-  // The site-history view has no nodeId, so node scoping only applies to CLOUD_NODE.
-  if (nodeId && withNode) {
-    clauses.push('"nodeId" = ?');
-    binds.push(nodeId);
-  }
+  if (siteId) match.siteIdList = siteId;
+  if (nodeId) match.nodeIdList = nodeId;
 
-  return { sql: clauses.length ? `WHERE ${clauses.join('\n    AND ')}` : '', binds };
+  return match;
+}
+
+/**
+ * Company ids whose name matches an ILIKE-style pattern.
+ *
+ * Snowflake could say `"Company Name" ILIKE '%Telamon%'` because the name was on
+ * every node row. Here the name lives only on Company, so the pattern is
+ * resolved to ids first and the nodes are filtered by id.
+ *
+ * Cached because it is a tiny collection (428 docs) hit by every query.
+ */
+async function resolveCompanyIds(pattern) {
+  /*
+   * Returns { ids }, NOT a bare array. cache.wrap() attaches its metadata with
+   * `{ ...result, cache }`, which turns an array into a plain object -- so a
+   * cached array comes back as {0:'..',1:'..'} with no .length, and every
+   * length check silently reads undefined. Wrapping in an object avoids that.
+   */
+  const cached = await cache.wrap('mongo-company-ids', { pattern }, async () => {
+    // Translate SQL LIKE wildcards into a regex, escaping everything else.
+    const escaped = String(pattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp('^' + escaped.replace(/%/g, '.*') + '$', 'i');
+
+    const { rows } = await mongo.aggregate(
+      COMPANIES,
+      [
+        { $match: { companyName: rx, isDeleted: { $ne: true } } },
+        { $project: { companyIdList: 1, companyName: 1 } },
+      ],
+      { label: 'mongo-company-ids' }
+    );
+
+    // companyIdList holds the string id every other collection joins on; _id is
+    // an ObjectId and will not match, so prefer the list.
+    const ids = [];
+    for (const r of rows) {
+      const fromList = Array.isArray(r.companyIdList) ? r.companyIdList : [];
+      if (fromList.length) ids.push(...fromList.map(String));
+      else ids.push(String(r._id));
+    }
+    return { ids: [...new Set(ids)] };
+  });
+
+  return Array.isArray(cached.ids) ? cached.ids : [];
 }
 
 /**
  * Reduce any scope to its COMPANY level only.
  *
- * The hierarchy is Company > Site > Node. The status KPI card is a
- * company-level figure by design: it answers "how do all of Telamon's sites
- * stand?", so drilling into one site must NOT shrink it. Previously the card
- * inherited siteId and collapsed to a single row (0/1/0) while the header still
- * named one route -- two different scopes on one screen, which reads wrong.
- *
- * Dropping siteId/nodeId here keeps the card stable while the rest of the page
- * drills. Note this is a *widening* of scope, so it must never be applied to
- * a per-user RLS predicate: companyId/companyPattern are preserved precisely
- * because those are the tenant boundary.
+ * The status KPI is a company-level figure by design, so drilling into one site
+ * must not shrink it. This WIDENS scope, so it must never be applied to a per-user RLS predicate
+ * -- companyId/companyPattern are preserved precisely because they are the
+ * tenant boundary.
  */
 function companyScopeOf(scope = {}) {
   const { companyId, companyPattern } = scope;
@@ -120,117 +182,181 @@ function companyScopeOf(scope = {}) {
   };
 }
 
-/** Bucket for nodes that exist in CLOUD_NODE but have no status-history row. */
-const NO_HISTORY = '(no status history)';
-
 /**
- * Status vocabulary translation.
+ * THE CLOUD_NODE EQUIVALENT: one flat row per node in scope.
  *
- * The dashboards speak Complete / In Progress / Yet to Start. The warehouse's
- * "Status" column for Telamon only ever holds 'In-progress' and 'Inactive' --
- * there is no value meaning "complete" and none meaning "not started".
- *
- * So this map is a documented assumption, NOT a derivation from the data:
- *   In-progress -> In Progress
- *   Inactive    -> Yet to Start   (best available reading of "not being worked")
- *   (nothing)   -> Complete       (no source; will always report 0)
- *
- * Unmapped values are returned under `unmapped` rather than being dropped, so a
- * new status value shows up as a visible gap instead of quietly vanishing from
- * the totals.
+ * $lookup + $unwind rather than two round trips, so the join happens on the
+ * server and only the projected fields cross the wire.
  */
-const STATUS_MAP = {
-  // Work under way.
-  'in-progress': 'inProgress',
-  'in progress': 'inProgress',
-  inprogress: 'inProgress',
-  // COP = Certificate of Provisioning. "Sent" means submitted but not yet
-  // signed off, so it is still in flight; "approved"/"completed" is the finish
-  // line -- CLOUD_NODE carries matching "COP Approved Date"/"COP Completed Date"
-  // columns, which is the evidence for treating approval as complete.
-  'cop sent': 'inProgress',
-  'cop rejected': 'inProgress',
-  'cop approved': 'complete',
-  'cop completed': 'complete',
-  // Not started.
-  'yet to start': 'yetToStart',
-  yettostart: 'yetToStart',
-  inactive: 'yetToStart',
-  // A node with no status history has never been worked.
-  [NO_HISTORY]: 'yetToStart',
-  // Generic spellings, kept so a renamed status still lands somewhere sensible.
-  complete: 'complete',
-  completed: 'complete',
-  closed: 'complete',
-};
+async function nodesInScope(scope = {}, { label = 'mongo-nodes' } = {}) {
+  const match = await buildMatch(scope);
 
-function classifyStatus(raw) {
-  if (!raw) return null;
-  return STATUS_MAP[String(raw).trim().toLowerCase()] || null;
+  const pipeline = [
+    { $match: match },
+    {
+      // Site.siteIdList, NOT Site.siteId -- the latter holds the site CODE.
+      $lookup: {
+        from: SITES,
+        localField: 'siteId',
+        foreignField: 'siteIdList',
+        as: 'site',
+        pipeline: [{ $project: { siteName: 1, siteStatus: 1, currentStatus: 1 } }],
+      },
+    },
+    {
+      $lookup: {
+        from: COMPANIES,
+        localField: 'companyId',
+        foreignField: 'companyIdList',
+        as: 'company',
+        pipeline: [{ $project: { companyName: 1 } }],
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        nodeId: '$nodeId',
+        siteId: '$siteId',
+        companyId: '$companyId',
+        nodeName: '$nodeName',
+        nodeCode: '$nodeCode',
+        routeName: { $ifNull: [{ $first: '$site.siteName' }, null] },
+        companyName: { $ifNull: [{ $first: '$company.companyName' }, null] },
+        // nodeStatus is an object here; Snowflake flattened it to a string.
+        workStatus: { $ifNull: ['$nodeStatus.status', null] },
+        recordStatus: { $ifNull: ['$currentStatus', null] },
+        siteStatus: { $ifNull: [{ $first: '$site.siteStatus.status' }, null] },
+        // Mixed double/long/null -- guard before converting, or nodes without a
+        // start date abort the pipeline instead of returning null.
+        startDate: {
+          $cond: [
+            { $in: [{ $type: '$nodeStartDate' }, ['double', 'long', 'int', 'decimal', 'date']] },
+            { $dateToString: { format: '%Y-%m-%d', date: { $toDate: '$nodeStartDate' } } },
+            null,
+          ],
+        },
+      },
+    },
+    { $sort: { nodeName: 1 } },
+  ];
+
+  const { rows, elapsedMs } = await mongo.aggregate(NODES, pipeline, { label });
+  return { nodes: rows, elapsedMs };
+}
+
+/** Nodes in scope. */
+async function listNodes(scope = {}) {
+  return cache.wrap('mongo-monitor-nodes', scope, async () => {
+    const { nodes, elapsedMs } = await nodesInScope(scope, { label: 'mongo-monitor-nodes' });
+    return { nodes, elapsedMs };
+  });
+}
+
+/** Routes ("Site Name") in scope, with their node counts. */
+async function listRoutes(scope = {}) {
+  return cache.wrap('mongo-monitor-routes', scope, async () => {
+    const match = await buildMatch(scope);
+
+    const pipeline = [
+      { $match: match },
+      {
+        $group: {
+          _id: { siteId: '$siteId', companyId: '$companyId' },
+          nodeIds: { $addToSet: '$nodeId' },
+        },
+      },
+      {
+        $lookup: {
+          from: SITES,
+          localField: '_id.siteId',
+          foreignField: 'siteIdList',
+          as: 'site',
+          pipeline: [{ $project: { siteName: 1 } }],
+        },
+      },
+      {
+        $lookup: {
+          from: COMPANIES,
+          localField: '_id.companyId',
+          foreignField: 'companyIdList',
+          as: 'company',
+          pipeline: [{ $project: { companyName: 1 } }],
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          siteId: '$_id.siteId',
+          companyId: '$_id.companyId',
+          routeName: { $ifNull: [{ $first: '$site.siteName' }, null] },
+          companyName: { $ifNull: [{ $first: '$company.companyName' }, null] },
+          nodeCount: { $size: '$nodeIds' },
+        },
+      },
+      { $sort: { nodeCount: -1, routeName: 1 } },
+    ];
+
+    const { rows, elapsedMs } = await mongo.aggregate(NODES, pipeline, {
+      label: 'mongo-monitor-routes',
+    });
+    return { routes: rows, elapsedMs };
+  });
 }
 
 /**
  * KPI card counts: NODES per status, following the current selection.
  *
- * Source is CLOUD_NODE."Node Status" -- deliberately NOT the status-history
- * views, for three reasons:
- *   - Coverage is complete: all 198 Telamon nodes carry a Node Status, whereas
- *     only 95 have a history row. The history route needed a LEFT JOIN and a
- *     synthetic "no history" bucket for the other 103, which then dominated the
- *     chart.
- *   - It agrees with the table. The rows show each node's "Node Status", so
- *     counting anything else lets the KPI contradict the list beneath it -- on
- *     LUMEN_ILA_SALT_LAKE_CITY_SACRAMENTO the history view called all 16 nodes
- *     "yet to start" while every row read IN PROGRESS.
- *   - No window function needed: this is current state, not a transition log.
- *
- * ("Node Status" is the work state -- IN PROGRESS / YET TO START / COP SENT /
- * COP APPROVED / INACTIVE. Do not confuse it with "Node Current Status", which
- * is the record's lifecycle flag and reads 'Active' for every Telamon node.)
+ * Source is SmallCellNode.nodeStatus.status -- the equivalent of CLOUD_NODE's
+ * "Node Status", and for the same reasons: complete coverage, and it agrees with
+ * the table rows beneath the card.
  */
 async function getStatusCounts(scope = {}) {
-  return cache.wrap('monitor-status-counts', scope, async () => {
-    const where = buildScope(scope, { withNode: true });
+  return cache.wrap('mongo-monitor-status-counts', scope, async () => {
+    const match = await buildMatch(scope);
 
-    const sql = `
-      SELECT COALESCE("Node Status", '${NO_HISTORY}') AS status,
-             COUNT(*) AS sites,
-             -- Company names in scope, so the UI can label the card with a name
-             -- rather than echoing back an opaque companyId.
-             ARRAY_AGG(DISTINCT "Company Name") AS companies
-        FROM ${NODE}
-        ${where.sql}
-       GROUP BY 1
-       ORDER BY sites DESC`;
+    const pipeline = [
+      { $match: match },
+      {
+        $group: {
+          _id: { $ifNull: ['$nodeStatus.status', NO_STATUS] },
+          sites: { $sum: 1 },
+          companyIds: { $addToSet: '$companyId' },
+        },
+      },
+      { $sort: { sites: -1 } },
+    ];
 
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, {
-      label: 'monitor-status-counts',
+    const { rows, elapsedMs } = await mongo.aggregate(NODES, pipeline, {
+      label: 'mongo-monitor-status-counts',
     });
 
     const counts = { complete: 0, inProgress: 0, yetToStart: 0 };
     const unmapped = [];
-    const companyNames = new Set();
+    const companyIds = new Set();
 
     for (const row of rows) {
-      const bucket = classifyStatus(row.STATUS);
-      const n = Number(row.SITES) || 0;
+      const bucket = classifyStatus(row._id);
+      const n = Number(row.sites) || 0;
       if (bucket) counts[bucket] += n;
-      else unmapped.push({ status: row.STATUS, sites: n });
-
-      // Snowflake returns ARRAY_AGG as a JSON string.
-      try {
-        const names = typeof row.COMPANIES === 'string' ? JSON.parse(row.COMPANIES) : row.COMPANIES;
-        for (const name of names || []) if (name) companyNames.add(name);
-      } catch {
-        /* label is cosmetic -- never fail the KPI over it */
-      }
+      else unmapped.push({ status: row._id, sites: n });
+      for (const id of row.companyIds || []) if (id) companyIds.add(String(id));
     }
 
-    const names = [...companyNames].sort();
-    /**
-     * Human label for the card. One company -> its name; several -> the shared
-     * prefix ("Telamon") when they agree, else a count. Never the raw id.
-     */
+    // Company NAMES for the card label; ids alone would be meaningless on screen.
+    let names = [];
+    if (companyIds.size) {
+      const { rows: cos } = await mongo.aggregate(
+        COMPANIES,
+        [
+          { $match: { companyIdList: { $in: [...companyIds] } } },
+          { $project: { companyName: 1 } },
+        ],
+        { label: 'mongo-company-names' }
+      );
+      names = [...new Set(cos.map((c) => c.companyName).filter(Boolean))].sort();
+    }
+
+    /** One company -> its name; several -> shared prefix, else a count. */
     const label =
       names.length === 1
         ? names[0]
@@ -243,648 +369,53 @@ async function getStatusCounts(scope = {}) {
     return {
       ...counts,
       total: counts.complete + counts.inProgress + counts.yetToStart,
-      // Declared explicitly so the UI can label WHAT the numbers cover, rather
-      // than leaving the reader to assume they match the page's heading.
-      // Counts follow the selection, so the UI can say what it is showing.
       scopeLevel: scope.nodeId ? 'node' : scope.siteId ? 'site' : 'company',
       grain: 'node',
       scopeLabel: label,
       companies: names,
-      // Raw values kept so the mapping above can be checked against reality.
-      raw: rows.map((r) => ({ status: r.STATUS, sites: Number(r.SITES) || 0 })),
+      raw: rows.map((r) => ({ status: r._id, sites: Number(r.sites) || 0 })),
       unmapped,
       elapsedMs,
     };
   });
 }
 
-/**
- * Per-node milestone progress and daily-report counts.
- *
- * Three sources, one query:
- *   CLOUD_FORMGOUP_SS.LIST   the per-node checklist -> which stages exist
- *   CLOUD_ECSITE_FIELDMEDIA  media per stage        -> which stages have started
- *   ...FORMBUILDERANSWERS    submissions of the node's DAILY REPORT FORM
- *
- * Two correctness details, both verified against the data rather than assumed:
- *
- * 1. Media is matched on NODEIDLIST (the array), NOT the scalar NODEID column,
- *    and counts MIME IN ('photo','image'). The scalar is NULL on most rows: for
- *    one node it saw 19 of 86 media rows, reporting "Shelter Placement: 0" when
- *    the true figure was 12. With the array rule, per-stage counts sum to 45 --
- *    exactly matching PHOTOLISTENTRIES in CLOUD_PHOTOCOUNT_PHOTOLIST_AGG.
- *
- * 2. The DAILY REPORT FORM's formId differs per node, so it is read from that
- *    node's own checklist rather than hardcoded.
- */
-async function getNodeMetrics(scope = {}) {
-  return cache.wrap('monitor-node-metrics', scope, async () => {
-    const where = buildScope(scope, { withNode: true });
-
-    // Safe to interpolate: these are validated lowercase-alphanumeric constants
-    // from config/milestones.js, never request input. See the guard there.
-    const inList = (stages) => stages.map((s) => `'${s}'`).join(', ');
-    const milestoneAgg = MILESTONES.filter((m) => m.stages.length > 0)
-      .map(
-        (m) => `
-             COUNT_IF(sm.NORM IN (${inList(m.stages)}))                      AS ${m.key}_total,
-             COUNT_IF(sm.NORM IN (${inList(m.stages)}) AND sm.PHOTOS > 0)    AS ${m.key}_done`
-      )
-      .join(',');
-
-    const sql = `
-      WITH scoped AS (
-        SELECT "nodeId" AS NODEID FROM ${NODE} ${where.sql}
-      ),
-      fg AS (
-        SELECT nl.value::STRING AS NODEID, f.value AS ITEM
-          FROM ${FORMGROUP} g,
-               LATERAL FLATTEN(input => g.NODEIDLIST) nl,
-               LATERAL FLATTEN(input => g.LIST) f
-         WHERE g.DBT_VALID_TO IS NULL                       -- SCD2: current only
-           -- Document-level ISDELETED, not just the item's. Without it, a
-           -- DELETED checklist still produces milestone bars: Blue Canyon and
-           -- Gaffney-Lumen-GBII-ILA-576932 had theirs deleted (2026-05-27 and
-           -- 2026-07-06) yet reported 11 and 12 mapped stages. getNodeChecklist
-           -- already filtered this, so the two functions disagreed.
-           AND NOT COALESCE(g.ISDELETED, FALSE)
-           AND NOT COALESCE(f.value:isDeleted::BOOLEAN, FALSE)
-      ),
-      stages AS (
-        SELECT s.NODEID,
-               LOWER(REGEXP_REPLACE(fg.ITEM:text::STRING, '[^a-zA-Z0-9]', '')) AS NORM,
-               fg.ITEM:formId::STRING AS FORM_ID
-          FROM scoped s JOIN fg ON fg.NODEID = s.NODEID
-         WHERE fg.ITEM:typeOfForm::STRING = 'photolist'
-      ),
-      stage_media AS (
-        SELECT st.NODEID, st.NORM, COUNT(m._ID) AS PHOTOS
-          FROM stages st
-          LEFT JOIN ${FIELD_MEDIA} m
-                 ON m.FORMID = st.FORM_ID
-                AND ARRAY_CONTAINS(st.NODEID::VARIANT, m.NODEIDLIST)
-                AND m.MIME IN ('photo', 'image')
-                AND NOT COALESCE(m.ISDELETED, FALSE)
-                AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
-         GROUP BY 1, 2
-      ),
-      milestones AS (
-        SELECT sm.NODEID,${milestoneAgg},
-               COUNT_IF(sm.NORM IN (${inList(MAPPED_STAGES)}))               AS mapped_total,
-               COUNT(*)                                                     AS all_stages,
-               SUM(sm.PHOTOS)                                               AS stage_photos
-          FROM stage_media sm GROUP BY 1
-      ),
-      /**
-       * Denominator: photo FIELDS defined for the node.
-       *
-       * Forms are enumerated from the QUESTIONS table via its own node keys, NOT
-       * from the checklist. The checklist's current SCD2 version omits forms that
-       * still hold data: for Wadley it yielded 161 fields and 530 media where the
-       * truth is 166 and 593. Same root cause as the daily-report bug.
-       *
-       * element='Photo' excludes 'Section_Header' rows, which are layout not
-       * fields. Verified exact against the portal on three nodes, where
-       * portal Total Fields + Not Applicable equals this count:
-       *   Basile 165+0, PASS CHRISTIAN 154+11, Wadley 141+25.
-       */
-      photo_fields AS (
-        SELECT s.NODEID,
-               COUNT_IF(qi.value:element::STRING = 'Photo') AS photo_fields
-          FROM scoped s
-          JOIN ${FORM_QUESTIONS} q
-                ON (q.NODEID = s.NODEID OR ARRAY_CONTAINS(s.NODEID::VARIANT, q.NODEIDLIST))
-               AND q.TYPEOFFORM = 'photolist'
-               AND NOT COALESCE(q.ISDELETED, FALSE),
-               LATERAL FLATTEN(input => q.LIST) qi
-         GROUP BY 1
-      ),
-      /**
-       * Numerator. Media is matched by node only -- no form restriction -- for the
-       * same reason: filtering to checklist forms dropped 63 of Wadley's 593.
-       *
-       * photos_all counts every media row; the headline photo figure comes from
-       * the pre-aggregated PHOTOLISTENTRIES below, verified exact on three nodes.
-       * fields_covered counts DISTINCT QUESTIONID and remains approximate.
-       */
-      photo_media AS (
-        SELECT s.NODEID,
-               COUNT(m._ID)                 AS photos_all,
-               COUNT(DISTINCT m.QUESTIONID) AS fields_covered
-          FROM scoped s
-          JOIN ${FIELD_MEDIA} m
-                ON ARRAY_CONTAINS(s.NODEID::VARIANT, m.NODEIDLIST)
-               AND NOT COALESCE(m.ISDELETED, FALSE)
-               AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
-         GROUP BY 1
-      ),
-      -- Photolist media count, pre-aggregated. Matches the portal's
-      -- "Total Media Count" exactly (Basile 122, PASS CHRISTIAN 554, Wadley 593).
-      -- NOTE: PHOTOENTRIES on the same table counts ALL media and overstates.
-      photo_agg AS (
-        SELECT s.NODEID, SUM(a.PHOTOLISTENTRIES) AS photos
-          FROM scoped s
-          JOIN ${PHOTOCOUNT} a ON a.NODEID = s.NODEID
-         GROUP BY 1
-      ),
-      /**
-       * Daily-report forms, identified by FORM NAME in the form definitions.
-       *
-       * Deliberately NOT looked up via the node's checklist: the DAILY REPORT
-       * FORM frequently is not listed there. Alexander City has 19 submissions
-       * but its checklist contains only COP-Documents and TELAMON-ILA-TRACKER,
-       * so the checklist route reported 0 while the portal showed 20.
-       *
-       * This also catches variants such as "INTEGRATION DAILY REPORT FORM-360".
-       */
-      daily_forms AS (
-        SELECT DISTINCT q._ID AS FORM_ID
-          FROM ${FORM_QUESTIONS} q
-         WHERE q.FORMNAME ILIKE '%DAILY REPORT%'
-           AND NOT COALESCE(q.ISDELETED, FALSE)
-      ),
-      report_days AS (
-        SELECT s.NODEID, TO_DATE(a.CREATEDAT) AS rpt_day, COUNT(DISTINCT a.ANSWERSETID) AS subs
-          FROM scoped s
-          JOIN ${FORM_ANSWERS} a ON a.NODEID = s.NODEID
-          JOIN daily_forms d     ON d.FORM_ID = a.FORMID
-         WHERE NOT COALESCE(a.ISDELETED, FALSE)
-         GROUP BY 1, 2
-      ),
-      reports AS (
-        SELECT NODEID,
-               SUM(subs)                        AS reports,
-               COUNT(*)                         AS report_days,
-               MIN(rpt_day)                     AS first_day,
-               MAX(rpt_day)                     AS last_day,
-               TO_VARCHAR(MAX(rpt_day),'YYYY-MM-DD') AS last_report
-          FROM report_days GROUP BY 1
-      ),
-      -- Missed days = working days inside the OBSERVED reporting window minus the
-      -- days actually reported.
-      --
-      -- Measured from first-to-last submission rather than from the node start
-      -- date: reporting on these routes began ~2026-05-28 while nodes started
-      -- 2025-11-18, so counting from node start returns ~200 for every node and
-      -- measures the pre-reporting era rather than missed work.
-      --
-      -- Weekends excluded via CALENDAR."Day of Week", which is ZERO-indexed:
-      -- 0=Sunday, 6=Saturday. This previously read NOT IN (1,7) on the assumption
-      -- of 1=Sunday/7=Saturday; since 7 does not exist that excluded MONDAYS and
-      -- counted every Saturday and Sunday as a working day, overstating missed
-      -- days by roughly a third (Wadley: 47 working days instead of 40, so 21
-      -- missed instead of 14). CALENDAR has no holiday flag, so public holidays
-      -- still count as missed.
-      working_days AS (
-        SELECT r.NODEID, COUNT(*) AS work_days
-          FROM reports r
-          JOIN ${CALENDAR} c
-                ON c."Date" BETWEEN r.first_day AND r.last_day
-               AND c."Day of Week" NOT IN (0, 6)   -- 0=Sun, 6=Sat
-         GROUP BY 1
-      )
-      SELECT s.NODEID,
-             COALESCE(ms.mapped_total, 0) AS mapped_total,
-             COALESCE(ms.all_stages, 0)   AS all_stages,
-             COALESCE(ms.stage_photos, 0) AS stage_photos,
-             ${MILESTONES.filter((m) => m.stages.length > 0)
-               .map((m) => `COALESCE(ms.${m.key}_total,0) AS ${m.key}_total, COALESCE(ms.${m.key}_done,0) AS ${m.key}_done`)
-               .join(', ')},
-             COALESCE(pf.photo_fields, 0)   AS photo_fields,
-             COALESCE(pa.photos, 0)         AS photos,
-             COALESCE(pm.photos_all, 0)     AS photos_all,
-             COALESCE(pm.fields_covered, 0) AS fields_covered,
-             COALESCE(r.reports, 0)     AS reports,
-             COALESCE(r.report_days, 0) AS report_days,
-             r.last_report,
-             -- NULL when the node never reported: there is no window to measure,
-             -- which is different from having missed zero days.
-             CASE WHEN r.report_days IS NULL THEN NULL
-                  ELSE GREATEST(COALESCE(wd.work_days, 0) - r.report_days, 0) END AS missed_days
-        FROM scoped s
-        LEFT JOIN milestones   ms ON ms.NODEID = s.NODEID
-        LEFT JOIN photo_fields pf ON pf.NODEID = s.NODEID
-        LEFT JOIN photo_media  pm ON pm.NODEID = s.NODEID
-        LEFT JOIN photo_agg    pa ON pa.NODEID = s.NODEID
-        LEFT JOIN reports      r  ON r.NODEID  = s.NODEID
-        LEFT JOIN working_days wd ON wd.NODEID = s.NODEID`;
-
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-node-metrics' });
-
-    const byNode = {};
-    for (const row of rows) {
-      const mappedTotal = Number(row.MAPPED_TOTAL) || 0;
-      // A node whose checklist matches no known stage is on a different template
-      // (0MH PHOTOS, WBS codes, in-building levels). Its milestones are not
-      // measurable, which is different from being at 0%.
-      const mapped = mappedTotal >= MIN_MAPPED_STAGES;
-
-      byNode[row.NODEID] = {
-        milestonesMapped: mapped,
-        mappedStages: mappedTotal,
-        totalStages: Number(row.ALL_STAGES) || 0,
-        stagePhotos: Number(row.STAGE_PHOTOS) || 0,
-        milestones: MILESTONES.map((m) => {
-          if (m.stages.length === 0) {
-            return { key: m.key, label: m.label, name: m.name, measurable: false, reason: m.unmeasurableReason, pct: null, done: 0, total: 0 };
-          }
-          const total = Number(row[`${m.key.toUpperCase()}_TOTAL`]) || 0;
-          const done = Number(row[`${m.key.toUpperCase()}_DONE`]) || 0;
-          return {
-            key: m.key,
-            label: m.label,
-            name: m.name,
-            measurable: mapped && total > 0,
-            done,
-            total,
-            pct: mapped && total > 0 ? Math.round((done / total) * 100) : null,
-          };
-        }),
-        reports: Number(row.REPORTS) || 0,
-        reportDays: Number(row.REPORT_DAYS) || 0,
-        lastReport: row.LAST_REPORT || null,
-        // NULL (not 0) when the node has never reported -- nothing to measure.
-        missedDays: row.MISSED_DAYS === null || row.MISSED_DAYS === undefined
-          ? null
-          : Number(row.MISSED_DAYS),
-
-        /**
-         * Photo progress = fields covered / photo fields defined.
-         *
-         * NOT photos/fields: a field accepts many photos, so that ratio exceeds
-         * 100% (PASS CHRISTIAN uploads 554 photos across 154 fields = 360%).
-         *
-         * photoFields and photos are both VERIFIED EXACT against the portal on
-         * three nodes (Basile 165/122, PASS CHRISTIAN 165/554, Wadley 166/593).
-         *
-         * fieldsCovered counts DISTINCT media QUESTIONID and is APPROXIMATE --
-         * 105 vs the portal's 103 on Wadley, 108 vs 109 on PASS CHRISTIAN. The
-         * exact field<->media link is not reproducible: media.QUESTIONID holds
-         * answer-level GUIDs that do not match question _ids. So the percentage
-         * is indicative; the two exact counts are exposed alongside it.
-         *
-         * The percentage also runs LOW because the denominator cannot exclude
-         * N/A fields (25 on Wadley, 11 on PASS CHRISTIAN) -- no N/A flag has been
-         * found in any table.
-         */
-        photoFields: Number(row.PHOTO_FIELDS) || 0,
-        photos: Number(row.PHOTOS) || 0,
-        photosAllMedia: Number(row.PHOTOS_ALL) || 0,
-        fieldsCovered: Number(row.FIELDS_COVERED) || 0,
-        photoPct:
-          Number(row.PHOTO_FIELDS) > 0
-            ? Math.min(100, Math.round((Number(row.FIELDS_COVERED) / Number(row.PHOTO_FIELDS)) * 100))
-            : null,
-        photoPctApproximate: true,
-      };
-    }
-
-    return { byNode, nodeCount: rows.length, elapsedMs };
-  });
-}
-
-/**
- * Per-stage detail for the Site Monitor, with each stage's milestone assignment.
- *
- * Separate from getNodeMetrics() on purpose: the Site Monitor shows ONE node and
- * wants stage-level rows, whereas the Route Monitor shows many nodes and only
- * needs the rolled-up percentages. Keeping them apart means this cannot change
- * anything the Route Monitor renders.
- *
- * Forms are read from the QUESTIONS table via its own node keys, not the
- * checklist -- the checklist's current version omits forms that still hold data
- * (it cost Wadley 5 fields and 63 photos).
- */
-async function getNodeStages(scope = {}) {
-  return cache.wrap('monitor-node-stages', scope, async () => {
-    const where = buildScope(scope, { withNode: true });
-
-    const sql = `
-      WITH scoped AS (
-        SELECT "nodeId" AS NODEID FROM ${NODE} ${where.sql}
-      ),
-      stage_forms AS (
-        SELECT s.NODEID, q._ID AS FORM_ID, q.FORMNAME AS stage_name
-          FROM scoped s
-          JOIN ${FORM_QUESTIONS} q
-                ON (q.NODEID = s.NODEID OR ARRAY_CONTAINS(s.NODEID::VARIANT, q.NODEIDLIST))
-               AND q.TYPEOFFORM = 'photolist'
-               AND NOT COALESCE(q.ISDELETED, FALSE)
-      ),
-      fields AS (
-        SELECT sf.NODEID, sf.FORM_ID, sf.stage_name,
-               COUNT_IF(qi.value:element::STRING = 'Photo') AS photo_fields
-          FROM stage_forms sf
-          JOIN ${FORM_QUESTIONS} q ON q._ID = sf.FORM_ID,
-               LATERAL FLATTEN(input => q.LIST) qi
-         GROUP BY 1, 2, 3
-      ),
-      media AS (
-        SELECT sf.NODEID, sf.FORM_ID,
-               COUNT(m._ID)                          AS photos,
-               COUNT(DISTINCT m.QUESTIONID)          AS fields_covered,
-               TO_VARCHAR(MAX(TO_DATE(m.CREATEDAT)), 'YYYY-MM-DD') AS last_photo
-          FROM stage_forms sf
-          LEFT JOIN ${FIELD_MEDIA} m
-                 ON m.FORMID = sf.FORM_ID
-                AND ARRAY_CONTAINS(sf.NODEID::VARIANT, m.NODEIDLIST)
-                AND NOT COALESCE(m.ISDELETED, FALSE)
-                AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
-         GROUP BY 1, 2
-      )
-      SELECT f.NODEID, f.stage_name, f.photo_fields,
-             COALESCE(md.photos, 0)         AS photos,
-             COALESCE(md.fields_covered, 0) AS fields_covered,
-             md.last_photo
-        FROM fields f
-        LEFT JOIN media md ON md.NODEID = f.NODEID AND md.FORM_ID = f.FORM_ID
-       ORDER BY f.NODEID, COALESCE(md.photos, 0) DESC, f.stage_name`;
-
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-node-stages' });
-
-    const byNode = {};
-    for (const row of rows) {
-      if (!byNode[row.NODEID]) byNode[row.NODEID] = [];
-      byNode[row.NODEID].push({
-        stage: row.STAGE_NAME,
-        // null when the stage name is not in the M1-M4 mapping (other templates).
-        milestone: classifyStage(row.STAGE_NAME),
-        photoFields: Number(row.PHOTO_FIELDS) || 0,
-        photos: Number(row.PHOTOS) || 0,
-        fieldsCovered: Number(row.FIELDS_COVERED) || 0,
-        lastPhoto: row.LAST_PHOTO || null,
-        started: (Number(row.PHOTOS) || 0) > 0,
-      });
-    }
-
-    return { byNode, elapsedMs };
-  });
-}
-
-/**
- * Items the checklist itself marks as conditional. This is the client's own
- * wording -- "Fencing & Gates - if applicable", "Utility Construction (If
- * Required)" -- so it is read from real data, not invented.
- */
-const OPTIONAL_ITEM = /\b(if\s+applicable|if\s+required|optional)\b/i;
-
-/**
- * Collapse a checklist item to the three statuses the dashboard reports:
- * Complete / Missing / N/A.
- *
- * IMPORTANT CAVEAT: there is no N/A flag anywhere in the warehouse. We looked
- * for one and it does not exist -- not on the checklist element, not on the form
- * definition, not on the media rows. So N/A here is INFERRED from two signals,
- * both defensible but neither authoritative:
- *
- *   1. The item is not part of this node's checklist at all. It was found on the
- *      node as a form but was never required of the crew, so "missing" would be
- *      a false accusation.
- *   2. The item's own name marks it conditional ("if applicable", "If
- *      Required"). The crew is not expected to complete it unless the site calls
- *      for it, so counting it as missing overstates the gap.
- *
- * An item with evidence is Complete regardless of either signal -- work that was
- * actually done is never reported as not-applicable.
- *
- * TODO(source): if the portal exposes a real per-item N/A flag, replace both
- * inferences with it and delete OPTIONAL_ITEM. Until then the UI labels these as
- * inferred so nobody reads them as the client's own sign-off.
- */
-function classifyItemStatus({ name, done, inChecklist }) {
-  if (done) return { status: 'complete', statusReason: null };
-  if (!inChecklist) {
-    return { status: 'na', statusReason: 'not required by this node’s checklist' };
-  }
-  if (OPTIONAL_ITEM.test(name || '')) {
-    return { status: 'na', statusReason: 'the checklist marks this item conditional' };
-  }
-  return { status: 'missing', statusReason: null };
-}
-
-/**
- * The node's CHECKLIST -- what the Site Monitor's table is meant to show.
- *
- * Source is CLOUD_FORMGOUP_SS.LIST, the per-node checklist definition. Each
- * element is one required item, carrying:
- *   text        -> the item name shown to the crew ("Permitting", "COP-Documents")
- *   typeOfForm  -> photolist | ondemand | installTracker (drives how it completes)
- *   formId      -> joins to FORMBUILDERQUESTIONS._ID, FIELDMEDIA.FORMID, ANSWERS.FORMID
- *   customTags  -> "level 0" (e.g. COP MEDIA), "level 1" (the stage), "position"
- *
- * SCD2: three versions exist per node with LIST lengths 14/15/18, so
- * DBT_VALID_TO IS NULL is mandatory or items appear two or three times.
- *
- * customTags must be flattened as a SECOND lateral, not a correlated subquery --
- * Snowflake rejects a correlated LATERAL FLATTEN ("Unsupported subquery type").
- * OUTER => TRUE keeps the untagged items (COP-Documents, the tracker), which
- * would otherwise vanish from the checklist entirely.
- *
- * The checklist is NOT the full picture: Wadley's has 14 items but the node also
- * carries a Concrete Foundation photolist and a DAILY REPORT FORM that are absent
- * from it -- the same omission that made daily reports read 0 before. So forms
- * that exist on the node but are missing from the checklist are unioned in and
- * flagged `inChecklist: false`, rather than being silently dropped.
- *
- * Kept separate from getNodeStages so the milestone card keeps its validated
- * numbers and the Route Monitor's code path is untouched.
- */
-async function getNodeChecklist(scope = {}) {
-  return cache.wrap('monitor-node-checklist', scope, async () => {
-    const where = buildScope(scope, { withNode: true });
-    const sql = `
-      WITH scoped AS (
-        SELECT "nodeId" AS NODEID FROM ${NODE} ${where.sql}
-      ),
-      checklist AS (
-        SELECT s.NODEID,
-               li.value:sequence::NUMBER AS SEQ,
-               li.value:text::STRING AS ITEM_NAME,
-               li.value:typeOfForm::STRING AS TYPE_OF_FORM,
-               li.value:formId::STRING AS FORM_ID,
-               MAX(IFF(ct.value:tagType::STRING = 'level 0',
-                       ct.value:tagValues[0]::STRING, NULL)) AS LEVEL_0,
-               MAX(IFF(ct.value:tagType::STRING = 'level 1',
-                       ct.value:tagValues[0]::STRING, NULL)) AS LEVEL_1,
-               MAX(IFF(ct.value:tagType::STRING = 'position',
-                       ct.value:tagValues[0]::STRING, NULL)) AS POSITION
-          FROM scoped s
-          JOIN ${FORMGROUP} fg
-                ON ARRAY_CONTAINS(s.NODEID::VARIANT, fg.NODEIDLIST)
-               AND fg.DBT_VALID_TO IS NULL
-               AND NOT COALESCE(fg.ISDELETED, FALSE),
-               LATERAL FLATTEN(input => fg.LIST) li,
-               LATERAL FLATTEN(input => li.value:customTags, OUTER => TRUE) ct
-         WHERE NOT COALESCE(li.value:isDeleted::BOOLEAN, FALSE)
-         GROUP BY 1, 2, 3, 4, 5
-      ),
-      /* Forms present on the node but absent from its checklist. */
-      extra AS (
-        SELECT s.NODEID, NULL AS SEQ, q.FORMNAME AS ITEM_NAME,
-               q.TYPEOFFORM AS TYPE_OF_FORM, q._ID AS FORM_ID,
-               NULL AS LEVEL_0, NULL AS LEVEL_1, NULL AS POSITION
-          FROM scoped s
-          JOIN ${FORM_QUESTIONS} q
-                ON (q.NODEID = s.NODEID OR ARRAY_CONTAINS(s.NODEID::VARIANT, q.NODEIDLIST))
-               AND NOT COALESCE(q.ISDELETED, FALSE)
-          LEFT JOIN checklist c ON c.NODEID = s.NODEID AND c.FORM_ID = q._ID
-         WHERE c.FORM_ID IS NULL
-      ),
-      items AS (
-        SELECT *, TRUE AS IN_CHECKLIST FROM checklist
-        UNION ALL
-        SELECT *, FALSE AS IN_CHECKLIST FROM extra
-      ),
-      /* How many photo fields the form defines (element='Photo' in its LIST). */
-      fields AS (
-        SELECT i.NODEID, i.FORM_ID,
-               COUNT_IF(qi.value:element::STRING = 'Photo') AS PHOTO_FIELDS
-          FROM items i
-          JOIN ${FORM_QUESTIONS} q ON q._ID = i.FORM_ID,
-               LATERAL FLATTEN(input => q.LIST) qi
-         GROUP BY 1, 2
-      ),
-      /* Photos. Match the node on NODEIDLIST -- the scalar NODEID is mostly NULL. */
-      media AS (
-        SELECT i.NODEID, i.FORM_ID,
-               COUNT(m._ID) AS PHOTOS,
-               TO_VARCHAR(MAX(TO_DATE(m.CREATEDAT)), 'YYYY-MM-DD') AS LAST_PHOTO
-          FROM items i
-          JOIN ${FIELD_MEDIA} m
-                ON m.FORMID = i.FORM_ID
-               AND ARRAY_CONTAINS(i.NODEID::VARIANT, m.NODEIDLIST)
-               AND NOT COALESCE(m.ISDELETED, FALSE)
-               AND NOT COALESCE(m.__HEVO__MARKED_DELETED, FALSE)
-         GROUP BY 1, 2
-      ),
-      /* Submissions, for the ondemand / installTracker items. */
-      answers AS (
-        SELECT i.NODEID, i.FORM_ID,
-               COUNT(a._ID) AS SUBMISSIONS,
-               TO_VARCHAR(MAX(TO_DATE(a.CREATEDAT)), 'YYYY-MM-DD') AS LAST_SUBMISSION
-          FROM items i
-          JOIN ${FORM_ANSWERS} a
-                ON a.FORMID = i.FORM_ID
-               AND ARRAY_CONTAINS(i.NODEID::VARIANT, a.NODEIDLIST)
-               AND NOT COALESCE(a.ISDELETED, FALSE)
-               AND NOT COALESCE(a.__HEVO__MARKED_DELETED, FALSE)
-         GROUP BY 1, 2
-      )
-      SELECT i.NODEID, i.SEQ, i.ITEM_NAME, i.TYPE_OF_FORM, i.FORM_ID,
-             i.LEVEL_0, i.LEVEL_1, i.POSITION, i.IN_CHECKLIST,
-             COALESCE(f.PHOTO_FIELDS, 0) AS PHOTO_FIELDS,
-             COALESCE(md.PHOTOS, 0) AS PHOTOS,
-             md.LAST_PHOTO,
-             COALESCE(an.SUBMISSIONS, 0) AS SUBMISSIONS,
-             an.LAST_SUBMISSION
-        FROM items i
-        LEFT JOIN fields f ON f.NODEID = i.NODEID AND f.FORM_ID = i.FORM_ID
-        LEFT JOIN media md ON md.NODEID = i.NODEID AND md.FORM_ID = i.FORM_ID
-        LEFT JOIN answers an ON an.NODEID = i.NODEID AND an.FORM_ID = i.FORM_ID
-       ORDER BY i.NODEID, i.IN_CHECKLIST DESC, i.SEQ NULLS LAST, i.ITEM_NAME`;
-
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, {
-      label: 'monitor-node-checklist',
-    });
-
-    const byNode = {};
-    for (const row of rows) {
-      if (!byNode[row.NODEID]) byNode[row.NODEID] = [];
-      const kind = row.TYPE_OF_FORM || null;
-      const photos = Number(row.PHOTOS) || 0;
-      const submissions = Number(row.SUBMISSIONS) || 0;
-      const inChecklist = row.IN_CHECKLIST === true || row.IN_CHECKLIST === 'true';
-
-      /*
-       * Completion signal depends on the item type. There is no sign-off column
-       * anywhere, so "done" means evidence exists -- photos for a photolist,
-       * submissions for a form -- and nothing stronger is claimed.
-       */
-      const done = kind === 'photolist' ? photos > 0 : submissions > 0;
-      const { status, statusReason } = classifyItemStatus({
-        name: row.ITEM_NAME,
-        done,
-        inChecklist,
-      });
-
-      byNode[row.NODEID].push({
-        name: row.ITEM_NAME,
-        kind,
-        status,
-        statusReason,
-        formId: row.FORM_ID,
-        sequence: row.SEQ === null || row.SEQ === undefined ? null : Number(row.SEQ),
-        // "position" is the client's own ordering and can differ from sequence
-        // (Wadley's Shelter Placement is sequence 6, position 7).
-        position: row.POSITION || null,
-        section: row.LEVEL_0 || null,
-        stage: row.LEVEL_1 || null,
-        // Classify from the level-1 tag, falling back to the item name.
-        milestone: classifyStage(row.LEVEL_1 || row.ITEM_NAME),
-        photoFields: Number(row.PHOTO_FIELDS) || 0,
-        photos,
-        lastPhoto: row.LAST_PHOTO || null,
-        submissions,
-        lastSubmission: row.LAST_SUBMISSION || null,
-        inChecklist,
-        done,
-      });
-    }
-
-    return { byNode, elapsedMs };
-  });
-}
-
-/**
- * The Company > Site > Node hierarchy, built from the id keys.
- *
- * One query, nested in JS rather than three round trips: CLOUD_NODE already
- * carries all three levels on every row, so the join is free.
- *
- * "Telamon" is a company *group* -- it resolves to four distinct companyIds
- * (OSP / Outdoor / DAS / Wireline), so the top level is a list, not one entry.
- */
+/** The Company > Site > Node tree that drives the scope picker. */
 async function getHierarchy(scope = {}) {
-  return cache.wrap('monitor-hierarchy', scope, async () => {
-    const where = buildScope(scope);
-    const sql = `
-      SELECT "companyId"    AS company_id,
-             "Company Name" AS company_name,
-             "siteId"       AS site_id,
-             "Site Name"    AS site_name,
-             "nodeId"       AS node_id,
-             "Node Name"    AS node_name,
-             "Site Status"  AS site_status,
-             TO_VARCHAR("Node Start Date",'YYYY-MM-DD') AS start_date
-        FROM ${NODE}
-        ${where.sql}
-       ORDER BY "Company Name", "Site Name", "Node Name"`;
+  return cache.wrap('mongo-monitor-hierarchy', scope, async () => {
+    const { nodes, elapsedMs } = await nodesInScope(scope, { label: 'mongo-monitor-hierarchy' });
 
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-hierarchy' });
+    // Sorted the same way the SQL ORDER BY did, so the picker lists identically.
+    const sorted = [...nodes].sort(
+      (a, b) =>
+        String(a.companyName).localeCompare(String(b.companyName)) ||
+        String(a.routeName).localeCompare(String(b.routeName)) ||
+        String(a.nodeName).localeCompare(String(b.nodeName))
+    );
 
     const companies = new Map();
-    for (const r of rows) {
-      if (!companies.has(r.COMPANY_ID)) {
-        companies.set(r.COMPANY_ID, {
-          companyId: r.COMPANY_ID,
-          companyName: r.COMPANY_NAME,
+    for (const r of sorted) {
+      if (!companies.has(r.companyId)) {
+        companies.set(r.companyId, {
+          companyId: r.companyId,
+          companyName: r.companyName,
           sites: new Map(),
         });
       }
-      const company = companies.get(r.COMPANY_ID);
+      const company = companies.get(r.companyId);
 
-      if (!company.sites.has(r.SITE_ID)) {
-        company.sites.set(r.SITE_ID, {
-          siteId: r.SITE_ID,
-          siteName: r.SITE_NAME,
-          siteStatus: r.SITE_STATUS,
+      if (!company.sites.has(r.siteId)) {
+        company.sites.set(r.siteId, {
+          siteId: r.siteId,
+          siteName: r.routeName,
+          siteStatus: r.siteStatus,
           nodes: [],
         });
       }
-      company.sites.get(r.SITE_ID).nodes.push({
-        nodeId: r.NODE_ID,
-        nodeName: r.NODE_NAME,
-        startDate: r.START_DATE,
+      company.sites.get(r.siteId).nodes.push({
+        nodeId: r.nodeId,
+        nodeName: r.nodeName,
+        startDate: r.startDate,
       });
     }
 
@@ -910,83 +441,715 @@ async function getHierarchy(scope = {}) {
   });
 }
 
-/** Routes ("Site Name") available in scope, for the route picker. */
-async function listRoutes(scope = {}) {
-  return cache.wrap('monitor-routes', scope, async () => {
-    const where = buildScope(scope);
-    const sql = `
-      SELECT "siteId"        AS site_id,
-             "Site Name"     AS route_name,
-             "Company Name"  AS company_name,
-             "companyId"     AS company_id,
-             COUNT(DISTINCT "nodeId") AS node_count
-        FROM ${NODE}
-        ${where.sql}
-       GROUP BY 1, 2, 3, 4
-       ORDER BY node_count DESC, route_name`;
+/* ---------------------------------------------------------------------------
+ * getNodeMetrics support
+ * ------------------------------------------------------------------------- */
 
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-routes' });
-    return {
-      routes: rows.map((r) => ({
-        siteId: r.SITE_ID,
-        routeName: r.ROUTE_NAME,
-        companyName: r.COMPANY_NAME,
-        companyId: r.COMPANY_ID,
-        nodeCount: Number(r.NODE_COUNT) || 0,
-      })),
-      elapsedMs,
-    };
+/**
+ * Working days (Mon-Fri) between two dates inclusive.
+ *
+ * Replaces ANALYTICS.CALENDAR, which the SQL joined for "Day of Week" NOT IN
+ * (1,7). Like CALENDAR, this has no holiday list, so public holidays still count
+ * as missed -- the same known limitation, not a new one.
+ */
+function workingDaysBetween(firstIso, lastIso) {
+  if (!firstIso || !lastIso) return 0;
+  const start = new Date(firstIso + 'T00:00:00Z');
+  const end = new Date(lastIso + 'T00:00:00Z');
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+
+  let count = 0;
+  for (const d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    const day = d.getUTCDay(); // 0 = Sunday, 6 = Saturday
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Attribute a per-node aggregation back to the nodes we asked for.
+ *
+ * The id collections carry nodeIdList (an array), so a document can belong to
+ * several nodes. $unwind then re-matching against the requested ids is what
+ * keeps a shared form from being counted against nodes outside the scope.
+ */
+function unwindToNodes(nodeIds) {
+  return [
+    { $match: { nodeIdList: { $in: nodeIds } } },
+    { $unwind: '$nodeIdList' },
+    { $match: { nodeIdList: { $in: nodeIds } } },
+  ];
+}
+
+/**
+ * Per-node metrics: photos, photo fields, daily reports, missed days, milestones.
+ *
+ * The Snowflake version is one 150-line statement of CTEs. Here it is several
+ * batched aggregations assembled in JS -- same inputs, same outputs, and each
+ * piece can be checked on its own.
+ *
+ * SOURCE CHOICES, both tested rather than assumed:
+ *
+ *  - Photos come from FieldMedia. Verified exact: Wadley's photolist forms sum
+ *    to 686, matching Snowflake. This also replaces
+ *    CLOUD_PHOTOCOUNT_PHOTOLIST_AGG.PHOTOLISTENTRIES, which is the same figure
+ *    pre-aggregated.
+ *
+ *  - Daily reports come from FormBuilderAnswers, NOT FieldMedia. FieldMedia only
+ *    has a row when a report carries a photo, and across the 193 Telamon nodes
+ *    with a daily-report form it undercounts on 48 of them -- 376 against 501,
+ *    so 125 reports have no photo. Walnut-MS alone reads 7 instead of 24. Using
+ *    it would also inflate missed days, since fewer report days means more days
+ *    counted as missed.
+ */
+async function getNodeMetrics(scope = {}) {
+  return cache.wrap('mongo-monitor-node-metrics', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    // The nodes in scope. Everything below is keyed on these ids.
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-metrics-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, nodeCount: 0, elapsedMs: Date.now() - started };
+
+    /* ---- 1. checklist photolist stages per node (for the milestone rollup) ---- */
+    const { rows: stageRows } = await mongo.aggregate(
+      'FormGroup',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true } } },
+        { $unwind: '$list' },
+        { $match: { 'list.typeOfForm': 'photolist', 'list.isDeleted': { $ne: true } } },
+        {
+          $project: {
+            _id: 0,
+            nodeId: '$nodeIdList',
+            text: '$list.text',
+            formId: '$list.formId',
+          },
+        },
+      ],
+      { label: 'mongo-metrics-stages' }
+    );
+
+    /* ---- 2. photo media per (node, form), for per-stage photo counts ---- */
+    const { rows: mediaByForm } = await mongo.aggregate(
+      'FieldMedia',
+      [
+        ...unwindToNodes(nodeIds),
+        // mime is 'photo' on some rows and 'image' on others -- both are photos.
+        { $match: { isDeleted: { $ne: true }, mime: { $in: ['photo', 'image'] } } },
+        { $group: { _id: { nodeId: '$nodeIdList', formId: '$formId' }, photos: { $sum: 1 } } },
+      ],
+      { label: 'mongo-metrics-stage-media' }
+    );
+    const photosByNodeForm = new Map();
+    for (const r of mediaByForm) {
+      photosByNodeForm.set(`${r._id.nodeId}::${r._id.formId}`, r.photos);
+    }
+
+    /* ---- 3. photo FIELDS defined, and the photolist form ids ----
+     * Enumerated from FormBuilderQuestions by the node's own keys, NOT from the
+     * checklist -- the checklist omits forms that still hold data. Same reason
+     * the SQL version does it this way. */
+    const { rows: fieldRows } = await mongo.aggregate(
+      'FormBuilderQuestions',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true }, typeOfForm: 'photolist' } },
+        {
+          $project: {
+            nodeId: '$nodeIdList',
+            formId: { $toString: '$_id' },
+            photoFields: {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ['$list', []] },
+                  as: 'f',
+                  // element='Photo' only -- Section_Header rows are layout.
+                  cond: { $eq: ['$$f.element', 'Photo'] },
+                },
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: '$nodeId',
+            photoFields: { $sum: '$photoFields' },
+            formIds: { $addToSet: '$formId' },
+          },
+        },
+      ],
+      { label: 'mongo-metrics-photo-fields' }
+    );
+    const fieldsByNode = new Map(fieldRows.map((r) => [r._id, r]));
+
+    /* ---- 4. all media per node: total, and distinct fields covered ---- */
+    const { rows: allMedia } = await mongo.aggregate(
+      'FieldMedia',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true } } },
+        {
+          $group: {
+            _id: '$nodeIdList',
+            photosAll: { $sum: 1 },
+            questionIds: { $addToSet: '$questionId' },
+            photolistIds: { $addToSet: { formId: '$formId', mime: '$mime' } },
+          },
+        },
+        {
+          $project: {
+            photosAll: 1,
+            fieldsCovered: { $size: '$questionIds' },
+          },
+        },
+      ],
+      { label: 'mongo-metrics-media' }
+    );
+    const mediaByNode = new Map(allMedia.map((r) => [r._id, r]));
+
+    /* ---- 5. photolist-only media: the headline photo figure ---- */
+    const photolistFormIds = [...new Set(fieldRows.flatMap((r) => r.formIds || []))];
+    const photosByNode = new Map();
+    if (photolistFormIds.length) {
+      const { rows } = await mongo.aggregate(
+        'FieldMedia',
+        [
+          { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: photolistFormIds } } },
+          { $unwind: '$nodeIdList' },
+          { $match: { nodeIdList: { $in: nodeIds }, isDeleted: { $ne: true } } },
+          { $group: { _id: '$nodeIdList', photos: { $sum: 1 } } },
+        ],
+        { label: 'mongo-metrics-photolist-media' }
+      );
+      rows.forEach((r) => photosByNode.set(r._id, r.photos));
+    }
+
+    /* ---- 5b. EXACT photo coverage and the N/A flag, from ProgressStats ----
+     *
+     * ProgressStats holds one document per photo FIELD per node, with:
+     *   status  'Completed' | 'In-Complete' | 'Not Required'  -- app-maintained
+     *   n_a     boolean                                        -- the N/A flag
+     *   questionId                                             -- the real field id
+     *
+     * This replaces two long-standing approximations:
+     *
+     *  1. COVERAGE WAS APPROXIMATE. It counted DISTINCT FieldMedia.questionId,
+     *     which holds answer-level GUIDs rather than question ids, so it came out
+     *     within a couple of fields of the portal rather than equal to it.
+     *     ProgressStats.status is the same per-field flag the portal reads, and
+     *     its document count equals photoFields exactly (120/120 on
+     *     ARGONNE-CAMPUS, 166/166 on Wadley, 165/165 on Basile).
+     *
+     *  2. N/A COULD NOT BE EXCLUDED. I previously reported that no N/A flag
+     *     existed in any table -- that was wrong. `n_a` is here and populated
+     *     (20 on Wadley, 10 on PASS CHRISTIAN, 0 on Basile). Excluding those
+     *     fields from the denominator is what the portal's "Total Fields Count"
+     *     does, so the percentage stops running low.
+     *
+     * When a node has no ProgressStats documents the old approximation is kept
+     * and photoPctApproximate stays true, so the UI can still say which it is.
+     */
+    const coverageByNode = new Map();
+    {
+      const { rows } = await mongo.aggregate(
+        'ProgressStats',
+        [
+          ...unwindToNodes(nodeIds),
+          { $match: { isDeleted: { $ne: true } } },
+          {
+            $group: {
+              _id: '$nodeIdList',
+              fields: { $sum: 1 },
+              completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
+              naFields: { $sum: { $cond: [{ $eq: ['$n_a', true] }, 1, 0] } },
+              notRequired: { $sum: { $cond: [{ $eq: ['$status', 'Not Required'] }, 1, 0] } },
+            },
+          },
+        ],
+        { label: 'mongo-metrics-coverage' }
+      );
+      rows.forEach((r) => coverageByNode.set(r._id, r));
+    }
+
+    /* ---- 6. daily reports ----
+     * Forms identified by NAME in the definitions, deliberately not via the
+     * node's checklist: the DAILY REPORT FORM is frequently absent from it.
+     * Alexander City has 19 submissions but a checklist containing only
+     * COP-Documents and the tracker, so the checklist route reported 0. */
+    const { rows: dailyForms } = await mongo.aggregate(
+      'FormBuilderQuestions',
+      [
+        { $match: { formName: { $regex: 'DAILY REPORT', $options: 'i' }, isDeleted: { $ne: true } } },
+        { $group: { _id: null, ids: { $addToSet: { $toString: '$_id' } } } },
+      ],
+      { label: 'mongo-metrics-daily-forms' }
+    );
+    const dailyFormIds = dailyForms.length ? dailyForms[0].ids : [];
+
+    const reportsByNode = new Map();
+    if (dailyFormIds.length) {
+      const { rows } = await mongo.aggregate(
+        'FormBuilderAnswers',
+        [
+          { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: dailyFormIds } } },
+          { $unwind: '$nodeIdList' },
+          { $match: { nodeIdList: { $in: nodeIds }, isDeleted: { $ne: true } } },
+          {
+            // Per node per DAY, so submissions and distinct days both come out.
+            $group: {
+              _id: {
+                nodeId: '$nodeIdList',
+                day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+              },
+              subs: { $addToSet: '$answerSetId' },
+            },
+          },
+          {
+            $group: {
+              _id: '$_id.nodeId',
+              reports: { $sum: { $size: '$subs' } },
+              reportDays: { $sum: 1 },
+              firstDay: { $min: '$_id.day' },
+              lastDay: { $max: '$_id.day' },
+            },
+          },
+        ],
+        { label: 'mongo-metrics-reports' }
+      );
+      rows.forEach((r) => reportsByNode.set(r._id, r));
+    }
+
+    /* ---- 7. assemble ---- */
+    const stagesByNode = new Map();
+    for (const s of stageRows) {
+      if (!stagesByNode.has(s.nodeId)) stagesByNode.set(s.nodeId, []);
+      stagesByNode.get(s.nodeId).push({
+        norm: normaliseStage(s.text),
+        photos: photosByNodeForm.get(`${s.nodeId}::${s.formId}`) || 0,
+      });
+    }
+
+    const byNode = {};
+    for (const nodeId of nodeIds) {
+      const stages = stagesByNode.get(nodeId) || [];
+      const mappedTotal = stages.filter((s) => MAPPED_STAGES.includes(s.norm)).length;
+      // A node whose checklist matches no known stage is on a different template
+      // (0MH PHOTOS, WBS codes, in-building levels). Not measurable, which is
+      // different from being at 0%.
+      const mapped = mappedTotal >= MIN_MAPPED_STAGES;
+
+      const f = fieldsByNode.get(nodeId) || { photoFields: 0 };
+      const m = mediaByNode.get(nodeId) || { photosAll: 0, fieldsCovered: 0 };
+      const r = reportsByNode.get(nodeId) || null;
+      const photoFields = Number(f.photoFields) || 0;
+
+      /*
+       * Coverage: prefer ProgressStats (exact, app-maintained, N/A-aware) and
+       * fall back to the DISTINCT-questionId approximation only when a node has
+       * no ProgressStats documents. photoPctApproximate tells the UI which it is,
+       * so the caveat under the bar is never shown when the figure is exact.
+       */
+      const cov = coverageByNode.get(nodeId) || null;
+      const exactCoverage = Boolean(cov && Number(cov.fields) > 0);
+      const naFields = cov ? Number(cov.naFields) || 0 : 0;
+      const fieldsCovered = exactCoverage
+        ? Number(cov.completed) || 0
+        : Number(m.fieldsCovered) || 0;
+      // Denominator excludes N/A: a field that does not apply should not count
+      // against the node. This is what the portal's "Total Fields Count" shows.
+      const coverageDenominator = exactCoverage
+        ? Math.max(Number(cov.fields) - naFields, 0)
+        : photoFields;
+
+      // NULL, not 0, when the node never reported: there is no window to measure,
+      // which is different from having missed zero days.
+      let missedDays = null;
+      if (r) {
+        const workDays = workingDaysBetween(r.firstDay, r.lastDay);
+        missedDays = Math.max(workDays - Number(r.reportDays || 0), 0);
+      }
+
+      byNode[nodeId] = {
+        milestonesMapped: mapped,
+        mappedStages: mappedTotal,
+        totalStages: stages.length,
+        stagePhotos: stages.reduce((sum, s) => sum + s.photos, 0),
+        milestones: MILESTONES.map((ms) => {
+          if (ms.stages.length === 0) {
+            return {
+              key: ms.key, label: ms.label, name: ms.name,
+              measurable: false, reason: ms.unmeasurableReason,
+              pct: null, done: 0, total: 0,
+            };
+          }
+          const inMs = stages.filter((s) => ms.stages.includes(s.norm));
+          const total = inMs.length;
+          const done = inMs.filter((s) => s.photos > 0).length;
+          return {
+            key: ms.key, label: ms.label, name: ms.name,
+            measurable: mapped && total > 0,
+            done, total,
+            pct: mapped && total > 0 ? Math.round((done / total) * 100) : null,
+          };
+        }),
+        reports: r ? Number(r.reports) || 0 : 0,
+        reportDays: r ? Number(r.reportDays) || 0 : 0,
+        lastReport: r ? r.lastDay || null : null,
+        missedDays,
+
+        photoFields,
+        photos: photosByNode.get(nodeId) || 0,
+        photosAllMedia: Number(m.photosAll) || 0,
+        fieldsCovered,
+        /** Fields the app marks N/A, excluded from the denominator below. */
+        naFields,
+        coverageDenominator,
+        photoPct:
+          coverageDenominator > 0
+            ? Math.min(100, Math.round((fieldsCovered / coverageDenominator) * 100))
+            : null,
+        photoPctApproximate: !exactCoverage,
+      };
+    }
+
+    return { byNode, nodeCount: nodeIds.length, elapsedMs: Date.now() - started };
   });
 }
 
-/** Nodes ("Node Name") within scope -- the rows of the Route Monitor table. */
-async function listNodes(scope = {}) {
-  return cache.wrap('monitor-nodes', scope, async () => {
-    const where = buildScope(scope);
-    const sql = `
-      SELECT "nodeId"                        AS node_id,
-             "siteId"                        AS site_id,
-             "companyId"                     AS company_id,
-             "Node Name"                     AS node_name,
-             "Node Code"                     AS node_code,
-             "Site Name"                     AS route_name,
-             "Company Name"                  AS company_name,
-             -- Work state (IN PROGRESS / YET TO START / COP SENT / COP APPROVED
-             -- / INACTIVE) -- this is what the table's STATUS column shows.
-             "Node Status"                   AS work_status,
-             -- Record lifecycle flag; 'Active' for every Telamon node, so it is
-             -- carried for completeness but is not the status users care about.
-             "Node Current Status"           AS record_status,
-             "Site Status"                   AS site_status,
-             TO_VARCHAR("Node Start Date", 'YYYY-MM-DD') AS start_date
-        FROM ${NODE}
-        ${where.sql}
-       ORDER BY "Node Name"`;
+/* ---------------------------------------------------------------------------
+ * Shared building blocks for getNodeStages / getNodeChecklist
+ * ------------------------------------------------------------------------- */
 
-    const { rows, elapsedMs } = await sf.query(sql, where.binds, { label: 'monitor-nodes' });
-    return {
-      nodes: rows.map((r) => ({
-        nodeId: r.NODE_ID,
-        siteId: r.SITE_ID,
-        companyId: r.COMPANY_ID,
-        nodeName: r.NODE_NAME,
-        nodeCode: r.NODE_CODE,
-        routeName: r.ROUTE_NAME,
-        companyName: r.COMPANY_NAME,
-        workStatus: r.WORK_STATUS,
-        recordStatus: r.RECORD_STATUS,
-        siteStatus: r.SITE_STATUS,
-        startDate: r.START_DATE,
-      })),
-      elapsedMs,
-    };
+/** Value of a customTags entry by tagType. The tags are [{tagType, tagValues}]. */
+function tagValue(customTags, tagType) {
+  if (!Array.isArray(customTags)) return null;
+  const hit = customTags.find((t) => t && t.tagType === tagType);
+  if (!hit || !Array.isArray(hit.tagValues) || !hit.tagValues.length) return null;
+  return hit.tagValues[0] == null ? null : String(hit.tagValues[0]);
+}
+
+/**
+ * Photo-field counts and last-upload dates per (node, form).
+ *
+ * One pass used by both getNodeStages and getNodeChecklist, so the two cannot
+ * disagree about how many photos a form has.
+ */
+async function formFactsForNodes(nodeIds) {
+  // Photo/document field counts from the form definitions.
+  const { rows: defs } = await mongo.aggregate(
+    'FormBuilderQuestions',
+    [
+      ...unwindToNodes(nodeIds),
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $project: {
+          nodeId: '$nodeIdList',
+          formId: { $toString: '$_id' },
+          formName: 1,
+          typeOfForm: 1,
+          photoFields: {
+            $size: {
+              $filter: { input: { $ifNull: ['$list', []] }, as: 'f', cond: { $eq: ['$$f.element', 'Photo'] } },
+            },
+          },
+          docFields: {
+            $size: {
+              $filter: { input: { $ifNull: ['$list', []] }, as: 'f', cond: { $eq: ['$$f.element', 'File_Upload'] } },
+            },
+          },
+        },
+      },
+    ],
+    { label: 'mongo-form-defs' }
+  );
+
+  // Media per (node, form): count, distinct fields touched, last upload.
+  const { rows: media } = await mongo.aggregate(
+    'FieldMedia',
+    [
+      ...unwindToNodes(nodeIds),
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: { nodeId: '$nodeIdList', formId: '$formId' },
+          photos: { $sum: 1 },
+          questionIds: { $addToSet: '$questionId' },
+          lastPhoto: { $max: '$createdAt' },
+        },
+      },
+      {
+        $project: {
+          photos: 1,
+          fieldsCovered: { $size: '$questionIds' },
+          lastPhoto: { $dateToString: { format: '%Y-%m-%d', date: '$lastPhoto' } },
+        },
+      },
+    ],
+    { label: 'mongo-form-media' }
+  );
+
+  // Submissions per (node, form), for the non-photolist items.
+  const { rows: answers } = await mongo.aggregate(
+    'FormBuilderAnswers',
+    [
+      ...unwindToNodes(nodeIds),
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: { nodeId: '$nodeIdList', formId: '$formId' },
+          submissions: { $sum: 1 },
+          lastSubmission: { $max: '$createdAt' },
+        },
+      },
+      {
+        $project: {
+          submissions: 1,
+          lastSubmission: { $dateToString: { format: '%Y-%m-%d', date: '$lastSubmission' } },
+        },
+      },
+    ],
+    { label: 'mongo-form-answers' }
+  );
+
+  const k = (nodeId, formId) => `${nodeId}::${formId}`;
+  return {
+    defs,
+    defByKey: new Map(defs.map((d) => [k(d.nodeId, d.formId), d])),
+    mediaByKey: new Map(media.map((m) => [k(m._id.nodeId, m._id.formId), m])),
+    answersByKey: new Map(answers.map((a) => [k(a._id.nodeId, a._id.formId), a])),
+    key: k,
+  };
+}
+
+/**
+ * Per-stage photo detail for the milestone card.
+ *
+ * Stages are the node's photolist FORMS, enumerated from FormBuilderQuestions by
+ * the node's own keys rather than from the checklist -- the checklist omits forms
+ * that still hold data, which is what made Wadley read 161 fields and 530 media
+ * where the truth was 166 and 593.
+ */
+async function getNodeStages(scope = {}) {
+  return cache.wrap('mongo-monitor-node-stages', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-stages-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, elapsedMs: Date.now() - started };
+
+    const facts = await formFactsForNodes(nodeIds);
+
+    const byNode = {};
+    for (const d of facts.defs) {
+      if (d.typeOfForm !== 'photolist') continue;
+      const m = facts.mediaByKey.get(facts.key(d.nodeId, d.formId)) || {};
+      const photos = Number(m.photos) || 0;
+
+      if (!byNode[d.nodeId]) byNode[d.nodeId] = [];
+      byNode[d.nodeId].push({
+        stage: d.formName,
+        // null when the stage name is not in the M1-M4 mapping (other templates).
+        milestone: classifyStage(d.formName),
+        photoFields: Number(d.photoFields) || 0,
+        photos,
+        fieldsCovered: Number(m.fieldsCovered) || 0,
+        lastPhoto: m.lastPhoto || null,
+        started: photos > 0,
+      });
+    }
+
+    // Same ordering as the SQL: most photos first, then name.
+    for (const list of Object.values(byNode)) {
+      list.sort((a, b) => b.photos - a.photos || String(a.stage).localeCompare(String(b.stage)));
+    }
+
+    return { byNode, elapsedMs: Date.now() - started };
   });
 }
 
 /**
- * Route Monitor header + KPI card.
- * Title comes from "Site Name" per the agreed mapping.
+ * The node's CHECKLIST -- what the Site Monitor's table shows.
+ *
+ * Source is FormGroup.list, the per-node checklist. Each element carries text
+ * (the item name), typeOfForm, formId, and customTags with "level 0" (section),
+ * "level 1" (stage) and "position".
+ *
+ * TWO THINGS THIS DOES DIFFERENTLY FROM THE SNOWFLAKE VERSION, both because the
+ * source is better here:
+ *
+ *  - No SCD2 filter is needed. Snowflake keeps three versions per node and
+ *    requires DBT_VALID_TO IS NULL to pick the current one; the MongoDB document
+ *    IS current. That also removes the staleness: Snowflake's "current" row for
+ *    Wadley is eight months old with 14 items where MongoDB has 20.
+ *  - Document-level isDeleted is filtered. A deleted checklist should not produce
+ *    rows, and MongoDB makes that a one-line $match.
+ *
+ * The checklist is still not the whole node: forms exist that are absent from it
+ * (Wadley's DAILY REPORT FORM among them). Those are unioned in and flagged
+ * inChecklist:false rather than dropped, exactly as the SQL version does.
  */
+async function getNodeChecklist(scope = {}) {
+  return cache.wrap('mongo-monitor-node-checklist', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-checklist-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, elapsedMs: Date.now() - started };
+
+    // The checklist itself. customTags is extracted in JS -- the aggregation
+    // equivalent needs a $filter per tag type and is far harder to read.
+    const { rows: items } = await mongo.aggregate(
+      'FormGroup',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { isDeleted: { $ne: true } } },
+        { $unwind: '$list' },
+        { $match: { 'list.isDeleted': { $ne: true } } },
+        {
+          $project: {
+            _id: 0,
+            nodeId: '$nodeIdList',
+            sequence: '$list.sequence',
+            name: '$list.text',
+            kind: '$list.typeOfForm',
+            formId: '$list.formId',
+            customTags: '$list.customTags',
+          },
+        },
+      ],
+      { label: 'mongo-checklist' }
+    );
+
+    const facts = await formFactsForNodes(nodeIds);
+
+    const byNode = {};
+    const seen = new Set();
+
+    const push = (nodeId, row) => {
+      if (!byNode[nodeId]) byNode[nodeId] = [];
+      byNode[nodeId].push(row);
+    };
+
+    /** Build one row from a form's facts, shared by both branches below. */
+    const buildRow = ({ nodeId, name, kind, formId, sequence, section, stage, position, inChecklist }) => {
+      const m = facts.mediaByKey.get(facts.key(nodeId, formId)) || {};
+      const a = facts.answersByKey.get(facts.key(nodeId, formId)) || {};
+      const def = facts.defByKey.get(facts.key(nodeId, formId)) || {};
+      const photos = Number(m.photos) || 0;
+      const submissions = Number(a.submissions) || 0;
+
+      // Evidence-based: there is no per-item sign-off anywhere, so "done" means
+      // photos for a photo list and a submission for a form. Nothing stronger.
+      const done = kind === 'photolist' ? photos > 0 : submissions > 0;
+      const { status, statusReason } = classifyItemStatus({ name, done, inChecklist });
+
+      return {
+        name,
+        kind: kind || null,
+        status,
+        statusReason,
+        /*
+         * Explicitly null, never undefined: some checklist items have no backing
+         * form at all -- "Segment Sweep/PIM" and "System Sweep/PIM" on 10 nodes
+         * -- and undefined is dropped by JSON.stringify, so the field would
+         * vanish from the payload rather than being reported as absent.
+         */
+        formId: formId || null,
+        sequence: sequence === null || sequence === undefined ? null : Number(sequence),
+        position: position || null,
+        section: section || null,
+        stage: stage || null,
+        milestone: classifyStage(stage || name),
+        photoFields: Number(def.photoFields) || 0,
+        photos,
+        lastPhoto: m.lastPhoto || null,
+        submissions,
+        lastSubmission: a.lastSubmission || null,
+        inChecklist,
+        done,
+      };
+    };
+
+    for (const it of items) {
+      seen.add(facts.key(it.nodeId, it.formId));
+      push(
+        it.nodeId,
+        buildRow({
+          nodeId: it.nodeId,
+          name: it.name,
+          kind: it.kind,
+          formId: it.formId,
+          sequence: it.sequence,
+          section: tagValue(it.customTags, 'level 0'),
+          stage: tagValue(it.customTags, 'level 1'),
+          // "position" is the client's own ordering and can differ from sequence
+          // (Wadley's Shelter Placement is sequence 6, position 7).
+          position: tagValue(it.customTags, 'position'),
+          inChecklist: true,
+        })
+      );
+    }
+
+    // Forms present on the node but absent from its checklist.
+    for (const d of facts.defs) {
+      const k = facts.key(d.nodeId, d.formId);
+      if (seen.has(k)) continue;
+      if (!nodeIds.includes(d.nodeId)) continue;
+      seen.add(k);
+      push(
+        d.nodeId,
+        buildRow({
+          nodeId: d.nodeId,
+          name: d.formName,
+          kind: d.typeOfForm,
+          formId: d.formId,
+          sequence: null,
+          section: null,
+          stage: null,
+          position: null,
+          inChecklist: false,
+        })
+      );
+    }
+
+    // Same ordering as the SQL: checklist items first, then by sequence, then name.
+    for (const list of Object.values(byNode)) {
+      list.sort(
+        (a, b) =>
+          Number(b.inChecklist) - Number(a.inChecklist) ||
+          (a.sequence ?? 9999) - (b.sequence ?? 9999) ||
+          String(a.name).localeCompare(String(b.name))
+      );
+    }
+
+    return { byNode, elapsedMs: Date.now() - started };
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * The two endpoint payloads.
+ *
+ * Pure composition; the assembly lives in monitorComposition.js and this module
+ * injects the data functions.
+ * ------------------------------------------------------------------------- */
+
 async function getRouteMonitor(scope = {}) {
   return composeRouteMonitor(scope, {
     listRoutes,
@@ -1009,18 +1172,20 @@ async function getSiteMonitor(scope = {}) {
 
 module.exports = {
   DEFAULT_COMPANY_PATTERN,
-  buildScope,
-  /** Shared with monitorMongoService so both adapters classify items alike. */
-  classifyItemStatus,
+  buildMatch,
   companyScopeOf,
   classifyStatus,
+  resolveCompanyIds,
+  nodesInScope,
+  workingDaysBetween,
+  tagValue,
+  listNodes,
+  listRoutes,
   getStatusCounts,
   getHierarchy,
   getNodeMetrics,
   getNodeStages,
   getNodeChecklist,
-  listRoutes,
-  listNodes,
   getRouteMonitor,
   getSiteMonitor,
 };

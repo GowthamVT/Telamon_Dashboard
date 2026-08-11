@@ -1,8 +1,8 @@
 /**
  * Read-only guardrail for MongoDB access.
  *
- * The counterpart to db/readOnly.js, which guards Snowflake SQL. This project
- * connects to the live ECSite production cluster, so only reads are permitted:
+ * This project connects to the live ECSite production cluster, so only reads are
+ * permitted:
  * nothing may insert, update, delete, or create an index, for any reason.
  *
  * Two layers, deliberately:

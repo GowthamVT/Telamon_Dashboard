@@ -3,7 +3,7 @@
  *
  * Client mistakes (unknown measure, bad sort key) return 400 with the allowed
  * values so the caller can self-correct. Everything else returns a generic 500;
- * raw Snowflake errors can name internal objects, so they are logged but not
+ * raw driver errors can name internal collections, so they are logged but not
  * echoed to the client in production.
  */
 const logger = require('../util/logger');

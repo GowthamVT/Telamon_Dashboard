@@ -1,13 +1,16 @@
-# Snowflake Analytics Dashboard
+# Completion Monitor Dashboard
 
-A custom (non-BI-tool) analytics dashboard that queries **live** data from Snowflake.
-Node/Express API + React UI, built to run standalone now and be embedded via
-`<iframe>` on an external site later.
+A custom (non-BI-tool) dashboard over **live** ECSite data: Route Completion
+Monitor and Site Completion Monitor. Node/Express API + React UI, built to run
+standalone now and be embedded via `<iframe>` on an external site later.
+
+**Data source: MongoDB Atlas (the ECSite production cluster), read-only.**
+It previously read a Snowflake warehouse; that path has been removed — see
+[History: the Snowflake migration](#history-the-snowflake-migration).
 
 ```
-├── backend/     Express API: pooled Snowflake access, caching, freshness sync
-├── frontend/    React + Vite dashboard: charts, filters, drill-down/through
-└── keys/        RSA key-pair for Snowflake auth (gitignored -- never committed)
+├── backend/     Express API: pooled MongoDB access, caching, freshness sync
+└── frontend/    React + Vite: Route Monitor and Site Monitor
 ```
 
 ---
@@ -16,169 +19,197 @@ Node/Express API + React UI, built to run standalone now and be embedded via
 
 | Piece | State |
 |---|---|
-| Backend API, caching, sync, security headers | Done — 41 tests passing |
-| React UI: filters, sorting, drill-down/up/through | Done — verified in headless Chrome |
-| Snowflake key-pair auth | **Blocked: public key not yet registered** (one SQL statement, see below) |
-| Live query against `ECSITE.ANALYTICS` | Pending the step above |
+| Backend API, caching, freshness, security headers | Done — 26 tests passing |
+| Route Monitor + Site Monitor on live data | Done |
+| MongoDB as the only source | Done |
 | Row-level security (RLS) | Deliberately deferred — see [Deferred: RLS](#deferred-row-level-security-rls) |
 
-The connection path is fully built and confirmed working up to authentication:
-Snowflake accepts the connection and rejects the JWT with `JWT token is invalid`,
-which is exactly the expected response until the public key is registered. Account
-resolution, networking, and key loading are all verified.
+**Known gaps, all data-side rather than code-side:**
 
-Because the live schema could not be read yet, the dashboard is **descriptor-driven**
-rather than hardcoded to specific columns — see [How the data model works](#how-the-data-model-works).
-Nothing needs to be rewritten once the key is live; you just run `npm run introspect`.
-
----
-
-## Step 1 — Register the public key in Snowflake (you must do this)
-
-A key pair has already been generated into `keys/` (gitignored). Run this in
-Snowflake as a role that can `ALTER USER` — **`USERADMIN` or `ACCOUNTADMIN`;
-`PUBLIC` cannot do it**:
-
-```sql
-ALTER USER GOWTHAM SET RSA_PUBLIC_KEY='MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmLjztmk5kaJ2JmRsWM5Wgc9Xsded8cI9ntie4wk95q6Qk7FATQjzIUTJZSMqLHyWX/E6BpGcNau5WFDm2qhrETnaZSAGpYit22LQMzqgboi4s6AniL/SldL7QYnAW9GTIez9iOpk+ueue5+uDzLlrlGIluEHpi7Yd1RkNgo5eesR38GmYFosVrygR+ryA2FrDW+FYtJ4nTnf3QdqNmnQTCjZWVaqpuyC02v4nX3DgsLVHm0f68C9toQU7R8LFAbFh//VkW8dR4K0TXsWRCfBwuMxEeFXbdJqHtlJiHmn6JxFqis6nBDhj/bOdFsaZG8/rgDccPp+JhYSeR7VOHVwXwIDAQAB';
-
--- Confirm it stored:
-DESC USER GOWTHAM;
-```
-
-`RSA_PUBLIC_KEY_FP` should read `SHA256:WHheD74iiJs61aLD2oBV4ikcFIpJ5yLzdyut1qahR6k=`.
-
-The same SQL is saved at `keys/register-public-key.sql` (gitignored). To generate a
-fresh pair: `cd backend && npm run keygen -- --force` (then re-register the new key).
-
-> Registration can take a few seconds to propagate.
+| Gap | Why |
+|---|---|
+| Milestones show `--` on 139 of 202 nodes | No milestone field exists in MongoDB. `config/milestones.js` maps the LUMEN ILA stage names; other templates (`0MH PHOTOS`, `C01.04/05` WBS codes, in-building floors) need a mapping only the client can supply |
+| M1 CD Drawings never measurable | Document-based, and only 5 documents have ever been uploaded across all of Telamon |
+| `TELAMON-ILA-TRACKER` unused | Configured on 63 nodes, 0 submissions. Only the sandbox has data (251 entries) |
+| Item-level N/A is inferred | From wording like "if applicable". The per-**field** N/A behind photo coverage is real (`ProgressStats.n_a`) |
+| Public holidays count as missed report days | No holiday calendar in the source |
 
 ---
 
-## Step 2 — Run it locally
+## Run it locally
 
-Prereqs: Node 20+ (built on v22).
+Two terminals.
 
 ```bash
 # 1. Backend
 cd backend
+cp .env.example .env         # then fill in MONGO_URI and MONGO_DATABASE
 npm install
-cp .env.example .env          # already contains your account/db/schema values
-npm run verify                # proves auth + queries a real table
-npm run introspect            # reads your schema -> dashboard.config.json
-npm run dev                   # API on http://localhost:8080
+npm run verify               # connectivity, collections, indexes
+npm run dev                  # http://localhost:8080
 
 # 2. Frontend (second terminal)
 cd frontend
 npm install
-npm run dev                   # UI on http://localhost:5173
+npm run dev                  # http://localhost:5173
 ```
 
-Open <http://localhost:5173>. The Vite dev server proxies `/api` to port 8080, so
-local development has no CORS involved at all.
+Vite proxies `/api` to port 8080, so no extra configuration is needed.
 
-### No Snowflake access yet? Run the UI on synthetic data
+`MONGO_URI` and `MONGO_DATABASE` are **required** — the API refuses to boot
+without them rather than starting and serving an empty dashboard.
+
+### Which source is serving?
 
 ```bash
-cd backend && npm run dev:mock     # real API, synthetic data, no Snowflake
-cd frontend && npm run dev
+curl http://localhost:8080/api/health        # {"source":"mongodb", ...}
+curl http://localhost:8080/api/health/mongo  # real round trip
+curl http://localhost:8080/api/status        # pool, cache, freshness
 ```
-
-`dev:mock` runs the **real** Express app — every route, the cache, and the drill
-logic are production code paths — with only the driver swapped for a seeded
-generator. Useful for UI work and demos at zero warehouse cost. It refuses to
-start with `NODE_ENV=production`.
 
 ### Useful commands
 
 | Command | What it does |
 |---|---|
-| `npm run verify` (backend) | Authenticate, list visible objects, SELECT from one. Diagnoses failures. |
-| `npm run introspect` (backend) | Regenerate `dashboard.config.json` from the live schema. `-- --object NAME` targets a specific table. |
-| `npm test` (backend) | 41 tests: SQL generation, injection safety, routing, caching, drill sequence. |
-| `npm run dev:mock` (backend) | API with synthetic data. |
-| `npm run build` (frontend) | Production bundle into `frontend/dist`. |
+| `npm run verify` (backend) | Connect, check the 9 required collections and the `nodeIdList` indexes |
+| `npm test` (backend) | 26 tests: routing, scope/RLS plumbing, caching, read-only guard |
+| `npm run build` (frontend) | Production bundle into `frontend/dist` |
 
 ---
 
-## How the Snowflake connection is configured
+## How the MongoDB connection is configured
 
 **All credentials come from `backend/.env`, which is gitignored.** Nothing is
 hardcoded; `backend/.env.example` documents every setting.
 
 | Setting | Value |
 |---|---|
-| Account / User | `KOA17766` / `GOWTHAM` |
-| Role / Warehouse | `PUBLIC` / `COMPUTE_WH` |
-| Database / Schema | `ECSITE` / `ANALYTICS` |
-| Auth | Key-pair JWT (`SNOWFLAKE_JWT`) — no password anywhere |
+| Cluster | MongoDB Atlas, ECSite production |
+| Database | `ecsite` |
+| Auth | Username/password in `MONGO_URI`, user holds role **`read` only** |
+| Read preference | `secondaryPreferred` |
 
-Nothing in this project creates or alters roles, schemas, or databases; it only
-reads, using the existing `PUBLIC` role.
+`readPreference=secondaryPreferred` is the setting that matters most: this is the
+same cluster the field portal runs on, so dashboard scans belong on a replica and
+never on the primary that crews depend on while uploading photos. `db/mongo.js`
+warns at startup if the URI omits it.
+
+### Reads only, enforced twice
+
+1. The Atlas user holds role `read`, so the **server** refuses a write.
+2. [`db/mongoReadOnly.js`](backend/src/db/mongoReadOnly.js) validates every
+   pipeline first, so a mistake fails loudly in our code with an actionable
+   message instead of arriving as a permissions error.
+
+The guard is a **whitelist** of read-only stages, not a blacklist of writers: a
+blacklist silently permits whatever it has not heard of. It recurses into
+`$lookup`, `$unionWith` and `$facet`, because a `$merge` nested in a sub-pipeline
+would slip past a top-level check.
+
+Nothing in this project creates, alters or deletes anything — including indexes.
+
+### The eight collections
+
+| Collection | Supplies |
+|---|---|
+| `SmallCellNode` | nodes: name, code, status, start date, ids |
+| `Site` | route names (join on `siteIdList`, **not** `siteId`, which holds the code) |
+| `Company` | company names |
+| `FormGroup` | the per-node checklist (`list[]`) |
+| `FormBuilderQuestions` | form definitions; `list[].element = 'Photo' / 'File_Upload'` |
+| `FormBuilderAnswers` | submission counts (daily reports) |
+| `FieldMedia` | uploaded photos, `approvalStatus` |
+| `ProgressStats` | per-field completion and the `n_a` flag |
 
 ### Connection pooling
 
-One process-wide pool via the official SDK's `createPool`, created lazily on first
-query ([`backend/src/db/snowflake.js`](backend/src/db/snowflake.js)). Requests
-borrow and return a connection — **never one connection per request**, since
-Snowflake session setup costs hundreds of milliseconds and would dominate latency.
+One process-wide `MongoClient`, created lazily on first use
+([`backend/src/db/mongo.js`](backend/src/db/mongo.js)). The driver maintains its
+own internal pool, so a client per request would mean a TLS handshake per request.
+Every aggregation carries `maxTimeMS` so a runaway pipeline cannot pin a
+connection. The client closes on `SIGINT`/`SIGTERM`.
 
-Each physical connection is primed once with `STATEMENT_TIMEOUT_IN_SECONDS`, so a
-runaway query can't pin a pooled connection indefinitely. Pool size, timeouts, and
-the statement cap are all env-tunable. The pool drains on `SIGINT`/`SIGTERM` so
-sessions close cleanly.
+### Traps worth knowing
+
+- `_id` is an `ObjectId`; the scalar id **fields** (`nodeId`, `siteId`,
+  `companyId`) are strings. Joining one to the other silently returns nothing.
+- Filter `SmallCellNode` on the `*List` fields — those are indexed, the scalar
+  equivalents are not.
+- Use `createdAt` (a real `Date`), not `createdDate` (mixed `double`/`long`/null).
+- Node names are **not** unique: two nodes are called "Wadley", two "Basile", two
+  "South Bay". Always resolve by `nodeId`.
 
 ---
 
 ## How the data model works
 
-The API and UI are driven by a **descriptor** — `backend/dashboard.config.json`,
-generated by `npm run introspect` from `INFORMATION_SCHEMA` — instead of hardcoded
-column names. It declares which columns are measures, which are drillable
-dimensions, and which is the time axis. `introspect` classifies columns by type and
-probes cardinality (text columns with ≤1000 distinct values become dimensions).
+Every query starts from one flat node row. Node, site and company live in three
+collections with different shapes, so
+[`nodesInScope()`](backend/src/services/monitorService.js) joins them once and the
+rest builds on that:
 
-This means one codebase works against whatever `ECSITE.ANALYTICS` actually holds,
-and the file is hand-editable: reorder `drillPath` to match real business meaning,
-relabel, drop noisy dimensions, or change aggregations. It is gitignored because it
-is generated and environment-specific. Restart the API after editing.
+```
+SmallCellNode.companyId  ->  Company.companyIdList  ->  companyName
+SmallCellNode.siteId     ->  Site.siteIdList        ->  siteName   (the "route")
+SmallCellNode.nodeName                                            (the "site")
+SmallCellNode.nodeStatus.status                                   (the KPI status)
+```
+
+**Naming inversion, carried over from the source:** the database's *site* is what
+the dashboards call the **route**, and its *node* is what they call the **site**.
+One site contains many nodes. Every query is explicit about which is which.
+
+Three things are business rules in config, not data:
+
+| Rule | Where | Why it is not data |
+|---|---|---|
+| Stage → milestone (M1–M4) | [`config/milestones.js`](backend/src/config/milestones.js) | No milestone field exists in any of the 122 collections |
+| Status vocabulary + item Complete/Missing/N/A | [`config/statusVocabulary.js`](backend/src/config/statusVocabulary.js) | The source has six status strings; the dashboard reports three words |
+| Weekday calendar for missed report days | `workingDaysBetween()` | No calendar collection; no holiday list anywhere |
 
 ### Why this is also the security boundary
 
-Two invariants in [`queryBuilder.js`](backend/src/services/queryBuilder.js) make the
-request surface injection-safe:
+`buildMatch()` in [`monitorService.js`](backend/src/services/monitorService.js) is
+the **single chokepoint** every query filters through, so a per-user predicate added
+there is inherited by all of them. Two invariants keep the request surface safe:
 
-1. **Identifiers** (table/column names) only ever come from the descriptor. Requests
-   reference descriptor *keys*, which are resolved to identifiers; an unknown key is
-   rejected with a `400` listing what's allowed, and never reaches SQL.
-2. **Values** (filters, date bounds, limits) are *always* bind parameters.
+1. **Collection names** are module constants, never request input.
+2. **Scope values** (`companyId`, `siteId`, `nodeId`) are used only as equality
+   matches on indexed array fields — never interpolated into a `$where`, and never
+   used to build a regex from raw input.
 
-Tests assert this directly with malicious `dimension`, `grain`, and `sortDir`
-payloads: a value like `West'; DROP TABLE X --` appears only in the bind array,
-never in the SQL text.
+An unresolvable company pattern matches **nothing** rather than everything
+(`{ $in: ['__no_company_matched__'] }`), so a failed lookup cannot silently widen
+scope to every tenant. There is a test for exactly that.
 
 ---
 
 ## API
 
+The frontend calls `/api/monitor/*` only.
+
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/meta` | Descriptor: measures, dimensions, drill path, time columns |
-| `GET /api/summary` | KPI tile values |
-| `GET /api/timeseries` | Trend, bucketed by `grain` (day…year) |
-| `GET /api/breakdown?dimension=<key>` | Grouped aggregate — also the drill-down query |
-| `GET /api/filter-options?dimension=<key>` | Distinct values for a dropdown |
-| `GET /api/detail` | Drill-through: raw rows + total count |
-| `GET /api/health` · `/api/health/snowflake` | Liveness (cheap) · real round trip |
-| `GET /api/status` | Pool, cache, and sync telemetry |
+| `GET /api/monitor/hierarchy` | Company › Site › Node tree for the scope picker |
+| `GET /api/monitor/routes` | Routes in scope, with node counts |
+| `GET /api/monitor/nodes` | Nodes in scope (the flat row) |
+| `GET /api/monitor/status-counts` | KPI card: Complete / In Progress / Yet to Start |
+| `GET /api/monitor/route` | Route Monitor payload: header + KPI + rows with metrics |
+| `GET /api/monitor/site` | Site Monitor payload: header, metrics, stages, checklist |
+| `GET /api/monitor/node-metrics` | Photos, fields, daily reports, missed days, milestones |
+| `GET /api/monitor/node-stages` | Per-stage photo detail |
+| `GET /api/monitor/node-checklist` | The node's checklist items |
+| `GET /api/health` · `/api/health/mongo` | Liveness (cheap, no query) · real round trip |
+| `GET /api/status` | Pool, cache, and freshness telemetry |
 | `POST /api/cache/invalidate` | Force a cache flush |
 | `POST /api/sync/check` | Run one freshness check now |
 
-Common query params: `measures=a,b` · `f.<dimension>=x,y` (filter; comma = `IN`) ·
-`from`/`to` · `grain` · `sortBy`/`sortDir` · `limit`/`offset`.
+Scope params, all optional and all flowing through `buildMatch()`:
+`companyId` · `siteId` · `nodeId` · `company` (name pattern, testing only).
+Omitting them falls back to the Telamon scope.
 
 ```bash
-curl "localhost:8080/api/breakdown?dimension=region&measures=amount&f.category=Toys,Games&sortBy=amount&sortDir=desc"
+curl "localhost:8080/api/monitor/site?nodeId=692f6fc9ffda99c8f8423306"
 ```
 
 Responses carry `X-Cache: HIT|MISS`.
@@ -200,41 +231,58 @@ reimplementing that interface and nothing else.
 
 [`freshnessWatcher.js`](backend/src/sync/freshnessWatcher.js) polls every
 `SYNC_POLL_SECONDS` (default 60) for a cheap fingerprint of the source and
-invalidates the cache when it changes:
+invalidates the cache when it changes.
 
-- **Tables** → `INFORMATION_SCHEMA` metadata (`LAST_ALTERED`/`ROW_COUNT`/`BYTES`).
-  Pure metadata, so polling does **not** spin up warehouse compute.
-- **Views** → a `COUNT(*)` probe, because a view's `LAST_ALTERED` tracks its
-  *definition*, not the underlying rows.
+The fingerprint is `estimatedDocumentCount()` across the five collections the
+monitors read. That reads collection metadata rather than scanning, so it stays
+cheap against multi-million-document collections and adds no meaningful load to
+the production cluster.
 
-A failed check never kills the interval; the next tick retries. Moving to Snowflake
-Streams later means replacing only `computeFingerprint()`.
+**Known limit:** counts detect inserts and deletes, not in-place updates. A photo
+whose `approvalStatus` flips to `Approved` changes no count, so that is picked up
+when the cache entry expires. `CACHE_TTL_SECONDS` (300) is therefore the real
+staleness bound; the watcher shortens it for the common case of new photos and new
+reports.
+
+A failed check never kills the interval; the next tick retries. Change streams
+would replace `computeMongoFingerprint()`.
 
 ---
 
 ## Frontend
 
-- **Filters** in one row scoping everything below: dimension dropdowns (populated
-  from live distinct values, each respecting the *other* active filters so choices
-  stay coherent), date range, grain, and measure selection.
-- **Sorting** is server-side, so clicking a header orders the whole result set in
-  Snowflake — not just the visible page.
-- **Drill-down / up / through** is one crumb stack that converts to ordinary API
-  filters, so the server stays stateless and every level is just another cached
-  query. Clicking a bar or row pushes a crumb; clicking any breadcrumb truncates the
-  stack (jumping up several levels at once); "View detail rows" keeps the same
-  filters and shows raw rows, so the detail count reconciles with the aggregate above it.
-- **Charts** are faceted small multiples — one panel per measure, each with its own
-  y-axis. Measures here differ by orders of magnitude (a count in the thousands
-  beside a currency total in the hundreds of thousands); overlaid on a shared axis
-  the smaller series flattens onto the baseline and reads as zero. A second y-axis
-  is not used: aligning two scales is arbitrary and invents a correlation the data
-  doesn't contain.
-- **Accessibility**: series colors were validated for colorblind separation and
-  contrast in both light and dark modes. Light-mode aqua falls below 3:1 against the
-  surface, so the sortable table beside each chart is *required relief* — every
-  charted value is also readable as text. Sortable headers are keyboard-operable
-  with `aria-sort`.
+Two tabs, both reading `/api/monitor/*`.
+
+**Route Completion Monitor** — one row per node across a route: photo coverage,
+daily reports, missed days, milestone blocks, overall, status. Header and KPI are
+company-scoped by design, so drilling into one route does not shrink the KPI.
+
+**Site Completion Monitor** — one node at a time: status KPI, milestone progress,
+photos & daily reports, and the checklist table.
+
+Presentation rules applied throughout, each for a reason:
+
+- **Unmeasurable is `--`, never 0%.** M1 has no source, so 0% would read as "no
+  progress" when the truth is "no source". Unmeasurable bars use a grey track so
+  they cannot be mistaken for a red zero.
+- **Percentages are pooled, not averaged.** The hero figure is stages-done over
+  stages-total; averaging four milestone percentages would weight M4's 2 stages the
+  same as M2's 7.
+- **Coverage numerator is fields covered, not photo count.** 686 photos across 166
+  fields is 80% coverage, not 413%.
+- **A card never contradicts the table beneath it.** The stat cards count the same
+  filtered rows the table renders.
+- **Aggregate scope never names one row.** With no node picked the header reads
+  "ALL SITES" and `detailName` says which node the cards describe — the API sends
+  `name: null` so no code path can claim otherwise.
+- **Colour is never the only signal.** Every status ships an icon and a word.
+
+The table lists only items mapped to M1–M4. A node on a non-ILA template
+therefore shows an empty table, with a message saying why rather than blaming the
+reader's filters.
+
+**No `localStorage`, no cookies, no `history.pushState`** — all three are
+partitioned or blocked in a cross-origin iframe.
 
 ---
 
@@ -277,38 +325,39 @@ Then build the frontend (`npm run build`), serve `frontend/dist`, and embed:
 per-user filtering. This was in scope to defer.
 
 When you add it, there is **one place** to do it:
-[`buildWhere()` in `backend/src/services/queryBuilder.js`](backend/src/services/queryBuilder.js).
-Every endpoint — summary, timeseries, breakdown, filter options, detail — builds its
-`WHERE` clause through that function, so a predicate added there is inherited
-everywhere automatically. Do *not* add tenant predicates per route; it is too easy to
-miss one.
+[`buildMatch()` in `backend/src/services/monitorService.js`](backend/src/services/monitorService.js).
+Every query — hierarchy, routes, nodes, status counts, metrics, stages, checklist —
+filters through that function, so a predicate added there is inherited everywhere
+automatically. Do *not* add tenant predicates per route; it is too easy to miss one.
 
 ```js
-if (principal) {
-  clauses.push(`"TENANT_ID" = ?`);
-  binds.push(principal.tenantId);
+async function buildMatch({ companyPattern, companyId, siteId, nodeId, principal } = {}) {
+  const match = {};
+  if (principal) {
+    // Derive scope from the authenticated user, and ignore anything the request
+    // asked for that the principal is not entitled to.
+    match.companyIdList = { $in: principal.companyIds };
+  } else if (companyId) {
+    match.companyIdList = companyId;
+  }
+  // ...
 }
 ```
 
-Two things must change with it:
+Two things to change at the same time:
 
-1. **The cache key must include the principal's scope.** A cache key that ignores
-   the security boundary would serve one tenant's cached rows to another — a data
-   leak, not just a stale read. See the TODO in
-   [`analyticsService.js`](backend/src/services/analyticsService.js).
-2. **Auth must stay iframe-friendly.** Prefer a short-lived signed token passed to
-   the frame (query param on the `iframe src`, or `postMessage`) and held in memory
-   — not a third-party cookie, which browsers may drop. See the TODO in
-   [`frontend/src/api/client.js`](frontend/src/api/client.js).
+1. **Remove the `companyPattern` fallback.** Today it defaults to `%Telamon%` — an
+   explicit single-tenant scope rather than "no filter", so the unrestricted case
+   never becomes the default by accident. Once auth exists, a missing principal must
+   **fail closed** rather than fall back to a pattern.
+2. **`companyScopeOf()` widens scope** — it drops `siteId`/`nodeId` so the KPI card
+   stays company-level while the page drills. It must never be applied to a per-user
+   predicate; `companyId` is preserved there precisely because it is the tenant
+   boundary.
 
-Other deferrals, all marked with `TODO` in code:
-
-- `POST /api/cache/invalidate` and `/api/sync/check` mutate shared state and are
-  unauthenticated — they need an admin credential before this is publicly exposed.
-- Cache is in-process, so multiple instances each keep their own. Redis is the fix
-  (the cache interface is already isolated for this).
-- Currency formatting prefixes `$` rather than guessing a currency code from the
-  data. Set it explicitly in `lib/format.js` if your data isn't USD.
+Also note the cache key: `queryCache` keys on the logical request. Once a principal
+affects results, the principal must be part of that key or one tenant could be
+served another's cached rows.
 
 ---
 
@@ -319,6 +368,41 @@ Other deferrals, all marked with `TODO` in code:
 - Helmet security headers, plus rate limiting (300 req/min default) that skips
   `/api/health` so probes don't consume a caller's budget.
 - Client errors return `400` with the allowed values; server errors log the detail
-  and return a generic message in production, since raw Snowflake errors can name
+  and return a generic message in production, since raw driver errors can name
   internal objects.
 - `/api/status` is asserted by test to expose no key material or password.
+
+---
+
+## History: the Snowflake migration
+
+The dashboard originally read `ECSITE.ANALYTICS` in Snowflake. It now reads the
+MongoDB source directly, and the Snowflake path has been deleted.
+
+**Why:** the warehouse trails the source by ~10 minutes, and more importantly its
+`CLOUD_FORMGOUP_SS` "current" SCD2 row was **eight months stale** — 14 checklist
+items where MongoDB had 20, including one that had since been deleted.
+
+**How it was verified:** both adapters ran side by side behind a flag, and a
+harness compared them field by field at the same instant across all 202 nodes.
+The final run was **153 checks, 0 unexpected differences**; every remaining
+divergence was traced to a specific stale row, with MongoDB the correct side.
+
+**Bugs the comparison exposed in the Snowflake implementation, since fixed:**
+
+| Bug | Effect |
+|---|---|
+| `CALENDAR."Day of Week"` is 0-indexed, not 1-indexed | `NOT IN (1,7)` excluded **Mondays** and counted every weekend as a working day. Missed days were overstated by ~30% (Wadley 21 instead of 14) |
+| `getNodeMetrics` filtered item-level `isDeleted` but not the document's | Deleted checklists still produced milestone bars on 2 nodes |
+
+**Two things MongoDB has that the warehouse never exposed:**
+
+- `ProgressStats.n_a` — the per-field N/A flag. Photo coverage had been reported
+  as approximate with N/A "not excluded" because no such flag could be found in
+  Snowflake; it exists here.
+- `ProgressStats.status` — per-field completion, the same flag the portal reads,
+  which made coverage exact instead of an approximation from `DISTINCT
+  FieldMedia.questionId`.
+
+The repository folder is still named `snowflake-analytics-dashboard` for path
+stability; nothing inside depends on Snowflake.

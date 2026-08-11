@@ -3,16 +3,12 @@
  *
  * getRouteMonitor and getSiteMonitor do not query anything themselves -- they
  * assemble what the per-query functions return, decide whether the selection is
- * aggregate, and shape the header. That logic is identical for Snowflake and
- * MongoDB, so it lives here once and both adapters inject their own data
- * functions.
+ * aggregate, and shape the header.
  *
- * WHY THIS IS SHARED RATHER THAN COPIED: the aggregate/`name: null` handling is
- * subtle and was itself a bug fix -- without it the header named an arbitrary
- * route while the picker said "All sites". Two copies means the next fix lands in
- * one adapter and not the other, and the symptom would be a header that is wrong
- * only when MONGO_ENABLED is flipped. The same reasoning already applies to
- * classifyStatus, classifyItemStatus and normaliseStage.
+ * Kept separate from the data layer so the header logic is testable on its own
+ * and has exactly one definition. The aggregate/`name: null` handling in
+ * particular was a bug fix -- without it the header named an arbitrary route
+ * while the picker said "All sites" -- and it should never exist in two places.
  */
 const { MILESTONES } = require('../config/milestones');
 

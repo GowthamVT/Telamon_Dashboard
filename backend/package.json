@@ -1,8 +1,8 @@
 {
-  "name": "snowflake-dashboard-backend",
+  "name": "completion-monitor-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Express API layer serving live Snowflake analytics to the dashboard frontend",
+  "description": "Completion Monitor API. Reads the ECSite MongoDB cluster (read-only).",
   "main": "src/server.js",
   "engines": {
     "node": ">=20"
@@ -10,13 +10,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "keygen": "node scripts/generate-keypair.js",
-    "verify": "node scripts/verify-connection.js",
-    "introspect": "node scripts/introspect-schema.js",
     "test": "node --test \"test/*.test.js\"",
-    "dev:mock": "node scripts/mock-server.js",
-    "verify:mongo": "node scripts/verify-mongo.js",
-    "compare": "node scripts/compare-sources.js"
+    "verify": "node scripts/verify-mongo.js"
   },
   "dependencies": {
     "compression": "^1.8.1",
@@ -26,7 +21,6 @@
     "express-rate-limit": "^8.6.1",
     "helmet": "^8.3.0",
     "mongodb": "^7.5.0",
-    "morgan": "^1.11.0",
-    "snowflake-sdk": "^3.1.0"
+    "morgan": "^1.11.0"
   }
 }

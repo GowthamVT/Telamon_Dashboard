@@ -12,37 +12,9 @@
  * which is the single place per-user RLS belongs.
  */
 const express = require('express');
-const config = require('../config/env');
 
-/**
- * WHICH SOURCE SERVES THE MONITORS.
- *
- * The dashboard is migrating from Snowflake to reading MongoDB directly. Both
- * adapters expose the same functions and return the same JSON, so the frontend
- * is unaffected either way -- MONGO_ENABLED picks between them.
- *
- * Snowflake stays the default. The Mongo adapter has to reproduce the validated
- * figures (Basile 165/122, PASS CHRISTIAN 165/554, Wadley 166/593 + 31 reports,
- * Bowling Green GBII 20) before the flag is flipped, and flipping back is one
- * env var if anything looks wrong.
- */
-function resolveMonitorService() {
-  if (!config.mongo.enabled) return require('../services/monitorService');
-  try {
-    return require('../services/monitorMongoService');
-  } catch (err) {
-    if (err.code === 'MODULE_NOT_FOUND') {
-      throw new Error(
-        'MONGO_ENABLED=true but services/monitorMongoService.js does not exist yet. ' +
-          'The MongoDB adapter is still being built -- set MONGO_ENABLED=false in ' +
-          'backend/.env to keep serving from Snowflake.'
-      );
-    }
-    throw err;
-  }
-}
-
-const monitors = resolveMonitorService();
+/** MongoDB is the only source; the Snowflake adapter has been removed. */
+const monitors = require('../services/monitorService');
 
 const router = express.Router();
 

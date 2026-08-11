@@ -1,7 +1,7 @@
 /**
  * Pooled MongoDB access to the ECSite source cluster.
  *
- * The counterpart to db/snowflake.js. One process-wide MongoClient is created
+ * One process-wide MongoClient is created
  * lazily on first use and reused for the lifetime of the process -- the driver
  * maintains its own connection pool internally, so a client per request would
  * mean a TLS handshake per request.
@@ -47,8 +47,6 @@ async function getDb() {
   if (connecting) return connecting;
 
   connecting = (async () => {
-    // Required lazily so the dependency is only loaded when Mongo is actually
-    // used -- the Snowflake path should not pay for it.
     const { MongoClient } = require('mongodb');
 
     if (!/readPreference=secondary/i.test(config.mongo.uri)) {
@@ -86,8 +84,7 @@ async function getDb() {
 /**
  * Run a read-only aggregation.
  *
- * Mirrors snowflake.query()'s return shape -- { rows, rowCount, elapsedMs } --
- * so the two adapters are interchangeable from a service's point of view.
+ * Returns { rows, rowCount, elapsedMs }.
  *
  * `maxTimeMS` is always applied so a runaway pipeline cannot pin a connection or
  * load the cluster indefinitely.

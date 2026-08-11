@@ -1,27 +1,18 @@
 /**
  * Background freshness watcher.
  *
- * Polls Snowflake on an interval for a cheap fingerprint of the source object.
+ * Polls MongoDB on an interval for a cheap fingerprint of the source.
  * When the fingerprint changes, the data changed, so the cache is invalidated
  * and the next request repopulates it. This is what lets us cache aggressively
  * without serving stale numbers indefinitely.
  *
- * Two fingerprint strategies:
- *   - TABLE: INFORMATION_SCHEMA metadata (LAST_ALTERED / ROW_COUNT / BYTES).
- *     Pure metadata, so it does not spin up warehouse compute.
- *   - VIEW:  a COUNT(*) (+ MAX(time)) probe, because a view's LAST_ALTERED
- *     tracks the *definition*, not the underlying rows.
- *
  * Interval, and whether this runs at all, come from SYNC_POLL_SECONDS /
- * SYNC_ENABLED. Upgrading to Snowflake Streams later means replacing only
- * computeFingerprint().
+ * SYNC_ENABLED. Change streams would replace computeMongoFingerprint().
  */
 const config = require('../config/env');
 const logger = require('../util/logger');
-const sf = require('../db/snowflake');
 const mongoDb = require('../db/mongo');
 const cache = require('../cache/queryCache');
-const dashboard = require('../config/dashboard');
 
 /**
  * Collections the monitors read. Fingerprinting these is what tells us the
@@ -72,58 +63,12 @@ async function computeMongoFingerprint() {
   return 'mongo:' + parts.join('|');
 }
 
-async function computeFingerprint(descriptor) {
-  const isView = String(descriptor.generatedFrom?.type || 'BASE TABLE')
-    .toUpperCase()
-    .includes('VIEW');
-
-  if (!isView) {
-    state.strategy = 'information_schema-metadata';
-    const { rows } = await sf.query(
-      `SELECT TO_VARCHAR(MAX(LAST_ALTERED)) AS last_altered,
-              MAX(ROW_COUNT)                AS row_count,
-              MAX(BYTES)                    AS bytes
-         FROM IDENTIFIER(?).INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
-      [descriptor.source.database, descriptor.source.schema, descriptor.source.object],
-      { label: 'freshness-metadata' }
-    );
-    const r = rows[0] || {};
-    // A table that reports no metadata (some views/external objects) falls back
-    // below, otherwise we would fingerprint "null" forever and never invalidate.
-    if (r.LAST_ALTERED || r.ROW_COUNT !== null) {
-      return `meta:${r.LAST_ALTERED}|${r.ROW_COUNT}|${r.BYTES}`;
-    }
-  }
-
-  state.strategy = 'count-probe';
-  const timeColumn = descriptor.timeColumn(descriptor.defaultTimeColumn);
-  const maxExpr = timeColumn ? `, TO_VARCHAR(MAX("${timeColumn.column}")) AS max_time` : '';
-  const { rows } = await sf.query(
-    `SELECT COUNT(*) AS row_count${maxExpr} FROM ${descriptor.fqn}`,
-    [],
-    { label: 'freshness-probe' }
-  );
-  const r = rows[0] || {};
-  return `probe:${r.ROW_COUNT}|${r.MAX_TIME ?? '-'}`;
-}
-
 /** One poll cycle. Exported so it can be triggered manually or from a test. */
 async function checkOnce({ invalidate = true } = {}) {
   state.checks += 1;
   state.lastCheckedAt = new Date().toISOString();
 
-  /*
-   * The Snowflake path needs dashboard.config.json, produced by
-   * `npm run introspect`. That descriptor has never existed in this project, so
-   * every Snowflake tick failed with "Dashboard is not configured yet" and the
-   * cache was only ever bounded by its TTL. The MongoDB path needs no descriptor
-   * -- it fingerprints the collections the monitors actually read -- so
-   * freshness works for the first time once MONGO_ENABLED is on.
-   */
-  const fingerprint = config.mongo.enabled
-    ? await computeMongoFingerprint()
-    : await computeFingerprint(dashboard.load());
+  const fingerprint = await computeMongoFingerprint();
   const changed = lastFingerprint !== null && fingerprint !== lastFingerprint;
   const first = lastFingerprint === null;
   lastFingerprint = fingerprint;
@@ -149,9 +94,7 @@ async function tick() {
   } catch (err) {
     state.errors += 1;
     state.lastError = err.message;
-    // Never let a transient source/config error kill the interval; the next tick
-    // retries. A missing descriptor is expected on the Snowflake path before
-    // `npm run introspect`.
+    // Never let a transient error kill the interval; the next tick retries.
     logger.warn(`Freshness check failed: ${err.message}`);
   }
 }

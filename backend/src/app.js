@@ -10,7 +10,6 @@ const rateLimit = require('express-rate-limit');
 const config = require('./config/env');
 const security = require('./middleware/security');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
-const analyticsRoutes = require('./routes/analytics');
 const systemRoutes = require('./routes/system');
 const monitorRoutes = require('./routes/monitors');
 
@@ -40,14 +39,13 @@ function createApp() {
 
   app.use('/api', systemRoutes);
   app.use('/api', monitorRoutes);
-  app.use('/api', analyticsRoutes);
 
   app.get('/', (req, res) => {
     res.json({
-      name: 'snowflake-analytics-dashboard API',
+      name: 'completion-monitor API (MongoDB)',
       endpoints: [
         'GET  /api/health',
-        'GET  /api/health/snowflake',
+        'GET  /api/health/mongo',
         'GET  /api/status',
         'GET  /api/meta',
         'GET  /api/summary',

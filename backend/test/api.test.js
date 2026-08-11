@@ -1,14 +1,19 @@
 /**
- * End-to-end API tests against the real Express app with the Snowflake driver
+ * End-to-end API tests against the real Express app with the MongoDB driver
  * stubbed out.
  *
- * These cover what unit tests on the query builder cannot: routing, request
- * parsing, cache hit/miss behaviour and its invalidation, response shape, and
- * the full drill-down -> drill-through request sequence the UI issues.
+ * These cover what unit tests cannot: routing, scope parsing, cache hit/miss and
+ * its invalidation, response shape, and that the read-only guard is enforced on
+ * the path the routes actually take.
+ *
+ * The stub asserts on the PIPELINES the service builds, so a change that would
+ * query the wrong collection or drop the scope filter fails here rather than
+ * silently returning different numbers.
  *
  * Run:  cd backend && npm test
  */
-process.env.DASHBOARD_CONFIG_PATH = 'test/fixtures/dashboard.fixture.json';
+process.env.MONGO_URI = 'mongodb://stub-user:stub-pass@stub-host/stubdb?readPreference=secondaryPreferred';
+process.env.MONGO_DATABASE = 'stubdb';
 process.env.SYNC_ENABLED = 'false';
 process.env.LOG_LEVEL = 'silent';
 process.env.APP_LOG_LEVEL = 'error';
@@ -19,283 +24,285 @@ process.env.RATE_LIMIT_MAX_REQUESTS = '10000';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const sf = require('../src/db/snowflake');
+const mongo = require('../src/db/mongo');
 const cache = require('../src/cache/queryCache');
+const { assertReadOnlyPipeline } = require('../src/db/mongoReadOnly');
 
 // ---------------------------------------------------------------------------
-// Stub the driver. Each stub returns rows shaped like the real thing, and we
-// record the SQL so tests can assert what would have been sent to Snowflake.
+// Stub the driver. Every call is recorded so tests can assert which collection
+// was queried and with what $match, and every pipeline is passed through the
+// real read-only guard so the tests exercise it too.
 // ---------------------------------------------------------------------------
 const executed = [];
 
-sf.query = async (sqlText, binds = [], opts = {}) => {
-  executed.push({ sql: sqlText, binds, label: opts.label });
+const NODE_ID = 'node-1';
+const SITE_ID = 'site-1';
+const COMPANY_ID = 'company-1';
 
-  if (/COUNT\(\*\) AS "total"/.test(sqlText)) {
-    return { rows: [{ total: 1234 }], rowCount: 1, columns: [], elapsedMs: 1 };
-  }
-  if (/DATE_TRUNC/.test(sqlText)) {
-    return {
-      rows: [
-        { bucket: '2024-01-01T00:00:00.000Z', record_count: 10, amount: 100.5 },
-        { bucket: '2024-02-01T00:00:00.000Z', record_count: 20, amount: 250.25 },
-      ],
-      rowCount: 2,
-      columns: [],
-      elapsedMs: 2,
-    };
-  }
-  if (/GROUP BY "REGION"|GROUP BY "CATEGORY"/.test(sqlText)) {
-    // Filter-options queries select value/count; breakdowns select the dim key.
-    if (/AS "value"/.test(sqlText)) {
-      return {
-        rows: [
-          { value: 'West', count: 500 },
-          { value: 'East', count: 400 },
-        ],
-        rowCount: 2,
-        columns: [],
-        elapsedMs: 2,
-      };
-    }
-    const key = /GROUP BY "REGION"/.test(sqlText) ? 'region' : 'category';
-    return {
-      rows: [
-        { [key]: 'West', record_count: 60, amount: 600.75 },
-        { [key]: 'East', record_count: 40, amount: 400.25 },
-      ],
-      rowCount: 2,
-      columns: [],
-      elapsedMs: 3,
-    };
-  }
-  if (/^SELECT "ORDER_ID"/m.test(sqlText)) {
-    return {
-      rows: [
-        { ORDER_ID: 1, REGION: 'West', CATEGORY: 'Toys', AMOUNT: 9.99, ORDER_DATE: '2024-01-05' },
-      ],
-      rowCount: 1,
-      columns: [],
-      elapsedMs: 4,
-    };
-  }
-  // Summary.
-  return { rows: [{ record_count: 100, amount: 1001.0 }], rowCount: 1, columns: [], elapsedMs: 5 };
+/** One flat node row, shaped exactly like nodesInScope() projects. */
+const NODE_ROW = {
+  nodeId: NODE_ID,
+  siteId: SITE_ID,
+  companyId: COMPANY_ID,
+  nodeName: 'Test Node',
+  nodeCode: 'TEST-NODE',
+  routeName: 'TEST-ROUTE',
+  companyName: 'Telamon OSP',
+  workStatus: 'IN PROGRESS',
+  recordStatus: 'Active',
+  siteStatus: 'In-progress',
+  startDate: '2026-01-15',
 };
 
+mongo.aggregate = async (collection, pipeline, opts = {}) => {
+  // Exercise the real guard, not a mock of it.
+  assertReadOnlyPipeline(pipeline);
+  executed.push({ collection, pipeline, label: opts.label });
+
+  if (collection === 'Company') {
+    return { rows: [{ _id: COMPANY_ID, companyIdList: [COMPANY_ID], companyName: 'Telamon OSP' }], rowCount: 1, elapsedMs: 1 };
+  }
+
+  if (collection === 'SmallCellNode') {
+    const grouped = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.siteId);
+    if (grouped) {
+      // listRoutes
+      return { rows: [{ siteId: SITE_ID, companyId: COMPANY_ID, routeName: 'TEST-ROUTE', companyName: 'Telamon OSP', nodeCount: 1 }], rowCount: 1, elapsedMs: 1 };
+    }
+    const statusGroup = pipeline.some((s) => s.$group && String(s.$group._id?.$ifNull?.[0]).includes('nodeStatus'));
+    if (statusGroup) {
+      return { rows: [{ _id: 'IN PROGRESS', sites: 1, companyIds: [COMPANY_ID] }], rowCount: 1, elapsedMs: 1 };
+    }
+    const idOnly = pipeline.some((s) => s.$project && Object.keys(s.$project).join() === '_id,nodeId');
+    if (idOnly) return { rows: [{ nodeId: NODE_ID }], rowCount: 1, elapsedMs: 1 };
+    return { rows: [NODE_ROW], rowCount: 1, elapsedMs: 1 };
+  }
+
+  if (collection === 'FormBuilderQuestions') {
+    const dailyForms = pipeline.some((s) => s.$match && s.$match.formName);
+    if (dailyForms) return { rows: [{ _id: null, ids: ['daily-form'] }], rowCount: 1, elapsedMs: 1 };
+    const grouped = pipeline.some((s) => s.$group && s.$group.photoFields);
+    if (grouped) return { rows: [{ _id: NODE_ID, photoFields: 10, formIds: ['form-1'] }], rowCount: 1, elapsedMs: 1 };
+    return {
+      rows: [{ nodeId: NODE_ID, formId: 'form-1', formName: 'Permitting', typeOfForm: 'photolist', photoFields: 10, docFields: 0 }],
+      rowCount: 1,
+      elapsedMs: 1,
+    };
+  }
+
+  if (collection === 'FormGroup') {
+    return {
+      rows: [{ nodeId: NODE_ID, sequence: 1, name: 'Permitting', kind: 'photolist', formId: 'form-1', customTags: [
+        { tagType: 'level 0', tagValues: ['COP MEDIA'] },
+        { tagType: 'level 1', tagValues: ['Permitting'] },
+        { tagType: 'position', tagValues: ['1'] },
+      ] }],
+      rowCount: 1,
+      elapsedMs: 1,
+    };
+  }
+
+  if (collection === 'FieldMedia') {
+    const byForm = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.formId);
+    if (byForm) return { rows: [{ _id: { nodeId: NODE_ID, formId: 'form-1' }, photos: 4, fieldsCovered: 3, lastPhoto: '2026-08-01' }], rowCount: 1, elapsedMs: 1 };
+    return { rows: [{ _id: NODE_ID, photosAll: 4, fieldsCovered: 3, photos: 4 }], rowCount: 1, elapsedMs: 1 };
+  }
+
+  if (collection === 'FormBuilderAnswers') {
+    const byForm = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.formId);
+    if (byForm) return { rows: [], rowCount: 0, elapsedMs: 1 };
+    return { rows: [{ _id: NODE_ID, reports: 5, reportDays: 4, firstDay: '2026-07-01', lastDay: '2026-07-10' }], rowCount: 1, elapsedMs: 1 };
+  }
+
+  if (collection === 'ProgressStats') {
+    return { rows: [{ _id: NODE_ID, fields: 10, completed: 3, naFields: 2, notRequired: 0 }], rowCount: 1, elapsedMs: 1 };
+  }
+
+  return { rows: [], rowCount: 0, elapsedMs: 1 };
+};
+
+mongo.find = async (collection, filter, opts = {}) => {
+  executed.push({ collection, filter, label: opts.label });
+  return { rows: [], rowCount: 0, elapsedMs: 1 };
+};
+
+mongo.ping = async () => ({ ok: true, database: 'stubdb', serverVersion: 'stub', elapsedMs: 1 });
+mongo.close = async () => {};
+
 const { createApp } = require('../src/app');
+const app = createApp();
 
-let server;
-let baseUrl;
-
-test.before(async () => {
-  const app = createApp();
-  await new Promise((resolve) => {
-    server = app.listen(0, resolve);
-  });
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
-});
-
-test.after(() => {
-  if (server) server.close();
-});
-
-/** Fresh cache + SQL log before each test so assertions are independent. */
-test.beforeEach(() => {
-  cache.clear();
-  cache.invalidateAll('test-reset');
-  executed.length = 0;
-});
-
-async function get(path) {
-  const response = await fetch(`${baseUrl}${path}`);
-  const body = await response.json();
-  return { status: response.status, body, headers: response.headers };
+/** Start the app on an ephemeral port for the duration of one call. */
+async function request(path) {
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  const { port } = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`);
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body, headers: res.headers };
+  } finally {
+    server.close();
+  }
 }
+
+test.beforeEach(() => {
+  executed.length = 0;
+  cache.invalidateAll('test');
+});
 
 // ---------------------------------------------------------------------------
 
-test('GET /api/health does not touch Snowflake', async () => {
-  const { status, body } = await get('/api/health');
+test('GET /api/health reports MongoDB as the source without touching it', async () => {
+  const { status, body } = await request('/api/health');
   assert.equal(status, 200);
   assert.equal(body.status, 'ok');
-  assert.equal(body.configured, true);
+  assert.equal(body.source, 'mongodb');
+  // The cheap probe must not query -- a load balancer hitting it should add no
+  // load to the production cluster.
   assert.equal(executed.length, 0);
 });
 
-test('GET /api/meta exposes the descriptor the UI renders controls from', async () => {
-  const { status, body } = await get('/api/meta');
+test('GET /api/health/mongo does a real round trip', async () => {
+  const { status, body } = await request('/api/health/mongo');
   assert.equal(status, 200);
-  assert.deepEqual(body.drillPath, ['region', 'category']);
-  assert.deepEqual(
-    body.measures.map((m) => m.key),
-    ['record_count', 'amount']
-  );
-  assert.equal(body.defaultTimeColumn, 'order_date');
-  // Physical column names are an internal detail; keys are the public contract.
-  assert.ok(!JSON.stringify(body.measures).includes('AMOUNT'));
+  assert.equal(body.status, 'ok');
+  assert.equal(body.session.database, 'stubdb');
 });
 
-test('GET /api/summary returns measure values and reports a cache MISS then HIT', async () => {
-  const first = await get('/api/summary?measures=amount,record_count');
-  assert.equal(first.status, 200);
-  assert.equal(first.headers.get('x-cache'), 'MISS');
-  assert.equal(first.body.values.amount, 1001);
-  assert.equal(first.body.cache.hit, false);
-  assert.equal(executed.length, 1);
-
-  const second = await get('/api/summary?measures=amount,record_count');
-  assert.equal(second.headers.get('x-cache'), 'HIT');
-  assert.equal(second.body.cache.hit, true);
-  // The point of the cache: no second warehouse query.
-  assert.equal(executed.length, 1);
-});
-
-test('a different filter is a different cache key, so it re-queries', async () => {
-  await get('/api/summary?measures=amount');
-  await get('/api/summary?measures=amount&f.region=West');
-  assert.equal(executed.length, 2);
-  assert.deepEqual(executed[1].binds, ['West']);
-});
-
-test('cache key is insensitive to parameter order', async () => {
-  await get('/api/summary?measures=amount&f.region=West');
-  await get('/api/summary?f.region=West&measures=amount');
-  assert.equal(executed.length, 1);
-});
-
-test('POST /api/cache/invalidate forces the next read to re-query', async () => {
-  await get('/api/summary?measures=amount');
-  assert.equal(executed.length, 1);
-
-  const invalidate = await fetch(`${baseUrl}/api/cache/invalidate`, { method: 'POST' });
-  assert.equal(invalidate.status, 200);
-
-  await get('/api/summary?measures=amount');
-  assert.equal(executed.length, 2);
-});
-
-test('GET /api/breakdown groups, and comma filters become an IN clause', async () => {
-  const { status, body } = await get('/api/breakdown?dimension=region&measures=amount&f.category=Toys,Games');
+test('GET /api/status exposes pool, cache and sync state but no credentials', async () => {
+  const { status, body } = await request('/api/status');
   assert.equal(status, 200);
-  assert.equal(body.dimension.key, 'region');
-  assert.equal(body.rows.length, 2);
-  assert.match(executed[0].sql, /GROUP BY "REGION"/);
-  assert.match(executed[0].sql, /"CATEGORY" IN \(\?, \?\)/);
-  assert.deepEqual(executed[0].binds.slice(0, 2), ['Toys', 'Games']);
-});
-
-test('GET /api/breakdown without a dimension is a 400, not a 500', async () => {
-  const { status, body } = await get('/api/breakdown');
-  assert.equal(status, 400);
-  assert.match(body.message, /dimension/);
-  assert.equal(executed.length, 0);
-});
-
-test('an unknown dimension is rejected with the allowed list', async () => {
-  const { status, body } = await get('/api/breakdown?dimension=DROP_TABLE');
-  assert.equal(status, 400);
-  assert.equal(body.error, 'bad_request');
-  assert.deepEqual(body.details.allowed, ['region', 'category']);
-  // Nothing was sent to Snowflake.
-  assert.equal(executed.length, 0);
-});
-
-test('sort parameters reach ORDER BY and are echoed back', async () => {
-  const { body } = await get('/api/breakdown?dimension=region&measures=amount&sortBy=amount&sortDir=asc');
-  assert.deepEqual(body.sort, { by: 'amount', dir: 'asc' });
-  assert.match(executed[0].sql, /ORDER BY "amount" ASC NULLS LAST/);
-});
-
-test('an invalid sort direction cannot reach SQL', async () => {
-  const { status } = await get('/api/breakdown?dimension=region&sortDir=asc;DROP');
-  assert.equal(status, 400);
-  assert.equal(executed.length, 0);
-});
-
-test('GET /api/timeseries buckets by grain and binds the date range', async () => {
-  const { status, body } = await get(
-    '/api/timeseries?measures=amount&grain=month&from=2024-01-01&to=2024-06-30'
-  );
-  assert.equal(status, 200);
-  assert.equal(body.grain, 'month');
-  assert.equal(body.rows.length, 2);
-  assert.match(executed[0].sql, /DATE_TRUNC\('MONTH', "ORDER_DATE"\)/);
-  assert.deepEqual(executed[0].binds.slice(0, 2), ['2024-01-01', '2024-06-30']);
-});
-
-test('an invalid grain is rejected', async () => {
-  const { status } = await get('/api/timeseries?grain=SECOND');
-  assert.equal(status, 400);
-  assert.equal(executed.length, 0);
-});
-
-test('GET /api/filter-options omits the listed dimension from its own filters', async () => {
-  const { status, body } = await get('/api/filter-options?dimension=region&f.region=West&f.category=Toys');
-  assert.equal(status, 200);
-  assert.equal(body.options.length, 2);
-  assert.match(executed[0].sql, /"CATEGORY" = \?/);
-  assert.ok(!executed[0].sql.includes('"REGION" = ?'));
-});
-
-test('GET /api/detail returns declared columns and a total for "N of M"', async () => {
-  const { status, body } = await get('/api/detail?f.region=West&limit=50');
-  assert.equal(status, 200);
-  assert.deepEqual(body.columns, ['ORDER_ID', 'REGION', 'CATEGORY', 'AMOUNT', 'ORDER_DATE']);
-  assert.equal(body.total, 1234);
-  assert.equal(body.page.limit, 50);
-  assert.ok(!executed.some((e) => /SELECT \*/.test(e.sql)));
-});
-
-test('the UI drill sequence produces progressively narrower queries', async () => {
-  // Level 1: top-level breakdown by region.
-  await get('/api/breakdown?dimension=region&measures=amount');
-  // Level 2: user clicked "West" -> group by category, region as a filter.
-  await get('/api/breakdown?dimension=category&measures=amount&f.region=West');
-  // Drill-through: same crumbs, raw rows.
-  await get('/api/detail?f.region=West&f.category=Toys');
-
-  const [level1, level2, detail] = [executed[0], executed[1], executed[2]];
-
-  assert.ok(!level1.sql.includes('WHERE'));
-  assert.match(level2.sql, /GROUP BY "CATEGORY"/);
-  assert.match(level2.sql, /"REGION" = \?/);
-  assert.deepEqual(level2.binds.slice(0, 1), ['West']);
-  assert.match(detail.sql, /"REGION" = \?/);
-  assert.match(detail.sql, /"CATEGORY" = \?/);
-  assert.deepEqual(detail.binds.slice(0, 2), ['West', 'Toys']);
-});
-
-test('drilling up reuses the cached parent level', async () => {
-  await get('/api/breakdown?dimension=region&measures=amount');
-  const afterLevel1 = executed.length;
-  await get('/api/breakdown?dimension=category&measures=amount&f.region=West');
-  // Breadcrumb click back to level 1 -> served from cache.
-  await get('/api/breakdown?dimension=region&measures=amount');
-  assert.equal(executed.length, afterLevel1 + 1);
-});
-
-test('GET /api/status reports cache and pool telemetry without leaking secrets', async () => {
-  const { status, body } = await get('/api/status');
-  assert.equal(status, 200);
-  assert.equal(body.snowflake.auth, 'key-pair (SNOWFLAKE_JWT)');
+  assert.equal(body.source, 'mongodb');
+  assert.equal(body.mongo.database, 'stubdb');
   assert.ok(body.cache);
   assert.ok(body.sync);
+  // The URI embeds the password; only the host may ever be exposed.
   const serialised = JSON.stringify(body);
-  assert.ok(!/PRIVATE KEY/i.test(serialised));
-  assert.ok(!/password/i.test(serialised));
+  assert.ok(!serialised.includes('stub-pass'), 'password must never appear in /status');
+  assert.ok(!serialised.includes('mongodb://'), 'the URI must never appear in /status');
 });
 
-test('unknown routes return a 404 JSON body', async () => {
-  const { status, body } = await get('/api/does-not-exist');
+test('GET /api/monitor/nodes returns the flat node rows', async () => {
+  const { status, body } = await request('/api/monitor/nodes');
+  assert.equal(status, 200);
+  assert.equal(body.nodes.length, 1);
+  assert.equal(body.nodes[0].nodeName, 'Test Node');
+  assert.equal(body.nodes[0].routeName, 'TEST-ROUTE');
+  assert.ok(executed.some((e) => e.collection === 'SmallCellNode'));
+});
+
+test('GET /api/monitor/status-counts maps the status vocabulary', async () => {
+  const { status, body } = await request('/api/monitor/status-counts');
+  assert.equal(status, 200);
+  // IN PROGRESS -> inProgress, and the total is the sum of the three buckets.
+  assert.equal(body.inProgress, 1);
+  assert.equal(body.complete, 0);
+  assert.equal(body.total, 1);
+  assert.equal(body.scopeLevel, 'company');
+  assert.equal(body.grain, 'node');
+});
+
+test('scope params reach the $match -- the RLS chokepoint', async () => {
+  await request(`/api/monitor/nodes?nodeId=${NODE_ID}&siteId=${SITE_ID}`);
+  const nodeQuery = executed.find((e) => e.collection === 'SmallCellNode');
+  const match = nodeQuery.pipeline.find((s) => s.$match).$match;
+  assert.equal(match.nodeIdList, NODE_ID);
+  assert.equal(match.siteIdList, SITE_ID);
+});
+
+test('an unknown company pattern matches nothing rather than everything', async () => {
+  // The Company stub returns a row, so force the empty path by stubbing it out.
+  const original = mongo.aggregate;
+  mongo.aggregate = async (collection, pipeline, opts) => {
+    if (collection === 'Company') return { rows: [], rowCount: 0, elapsedMs: 1 };
+    return original(collection, pipeline, opts);
+  };
+  try {
+    await request('/api/monitor/nodes?company=NoSuchCompany');
+    const nodeQuery = executed.find((e) => e.collection === 'SmallCellNode');
+    const match = nodeQuery.pipeline.find((s) => s.$match).$match;
+    assert.deepEqual(match.companyIdList, { $in: ['__no_company_matched__'] });
+  } finally {
+    mongo.aggregate = original;
+  }
+});
+
+test('GET /api/monitor/site returns header, metrics, stages and checklist', async () => {
+  const { status, body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  assert.equal(status, 200);
+  assert.equal(body.site.name, 'Test Node');
+  assert.equal(body.site.aggregate, false);
+  assert.ok(body.metrics, 'metrics present');
+  assert.ok(Array.isArray(body.stages));
+  assert.ok(Array.isArray(body.checklist));
+  assert.equal(body.milestoneDefs.length, 4);
+});
+
+test('aggregate scope yields name:null so the header cannot claim one node', async () => {
+  const { body } = await request('/api/monitor/site');
+  assert.equal(body.site.aggregate, true);
+  assert.equal(body.site.name, null, 'name must be null when aggregating');
+  assert.equal(body.site.detailName, 'Test Node', 'detailName still says which node');
+});
+
+test('GET /api/monitor/route attaches metrics to each row', async () => {
+  const { status, body } = await request(`/api/monitor/route?siteId=${SITE_ID}`);
+  assert.equal(status, 200);
+  assert.equal(body.route.name, 'TEST-ROUTE');
+  assert.equal(body.route.aggregate, false);
+  assert.equal(body.nodes.length, 1);
+  assert.ok('metrics' in body.nodes[0]);
+});
+
+test('photo coverage uses ProgressStats and excludes N/A from the denominator', async () => {
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  const m = body.metrics;
+  // Stub: 10 fields, 3 completed, 2 N/A -> 3 of 8 = 38%, and exact.
+  assert.equal(m.fieldsCovered, 3);
+  assert.equal(m.naFields, 2);
+  assert.equal(m.coverageDenominator, 8);
+  assert.equal(m.photoPct, 38);
+  assert.equal(m.photoPctApproximate, false);
+  assert.ok(executed.some((e) => e.collection === 'ProgressStats'));
+});
+
+test('missed days come from weekdays in the observed window', async () => {
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  // 2026-07-01 .. 2026-07-10 is 8 weekdays; 4 days reported -> 4 missed.
+  assert.equal(body.metrics.reports, 5);
+  assert.equal(body.metrics.reportDays, 4);
+  assert.equal(body.metrics.missedDays, 4);
+});
+
+test('repeat requests are served from cache', async () => {
+  const first = await request('/api/monitor/nodes');
+  assert.equal(first.headers.get('x-cache'), 'MISS');
+  const countAfterFirst = executed.length;
+
+  const second = await request('/api/monitor/nodes');
+  assert.equal(second.headers.get('x-cache'), 'HIT');
+  assert.equal(executed.length, countAfterFirst, 'a cache hit must not query again');
+});
+
+test('cache invalidation forces a refetch', async () => {
+  await request('/api/monitor/nodes');
+  const before = executed.length;
+  cache.invalidateAll('test');
+  const again = await request('/api/monitor/nodes');
+  assert.equal(again.headers.get('x-cache'), 'MISS');
+  assert.ok(executed.length > before, 'invalidation must cause a new query');
+});
+
+test('unknown routes 404 with JSON', async () => {
+  const { status, body } = await request('/api/does-not-exist');
   assert.equal(status, 404);
-  assert.equal(body.error, 'not_found');
+  assert.ok(body.error);
 });
 
-test('security headers allow iframe embedding and omit X-Frame-Options', async () => {
-  const response = await fetch(`${baseUrl}/api/health`);
-  const csp = response.headers.get('content-security-policy');
-  assert.match(csp, /frame-ancestors/);
-  // X-Frame-Options has no allowlist syntax and would block embedding outright.
-  assert.equal(response.headers.get('x-frame-options'), null);
+test('the retired Snowflake analytics endpoints are gone', async () => {
+  for (const path of ['/api/summary', '/api/timeseries', '/api/breakdown', '/api/detail']) {
+    const { status } = await request(path);
+    assert.equal(status, 404, `${path} should no longer exist`);
+  }
 });

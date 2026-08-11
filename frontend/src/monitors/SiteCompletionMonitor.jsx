@@ -654,7 +654,18 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             : visible.map((item) => <DocumentRow key={item.id} item={item} />)}
 
           {(visibleItems || visible).length === 0 ? (
-            <div className="mon-empty-row">No documents match your filters.</div>
+            <div className="mon-empty-row">
+              {/*
+                Distinguish "your filters excluded everything" from "this node has
+                nothing to list". The table shows only M1-M4 items, so a node on a
+                non-ILA template is empty before any filter is applied -- saying
+                "no documents match your filters" there blames the reader for a
+                property of the data.
+              */}
+              {visibleItems && checklist && checklist.length === 0
+                ? "None of this node's checklist items are mapped to M1–M4, so there is nothing to list."
+                : 'No documents match your filters.'}
+            </div>
           ) : null}
         </div>
       </div>

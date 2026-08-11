@@ -1,29 +1,18 @@
 /**
  * Process entry point: start HTTP, start the freshness watcher, and shut both
- * down cleanly so pooled Snowflake sessions are released.
+ * down cleanly so the MongoDB client disconnects properly.
  */
 const { createApp } = require('./app');
 const config = require('./config/env');
 const logger = require('./util/logger');
-const sf = require('./db/snowflake');
 const mongo = require('./db/mongo');
-const dashboard = require('./config/dashboard');
 const freshness = require('./sync/freshnessWatcher');
 
 const app = createApp();
 
 const server = app.listen(config.port, () => {
   logger.info(`API listening on http://localhost:${config.port} (${config.env})`);
-  logger.info(
-    `Snowflake target: ${config.snowflake.account} ${config.snowflake.database}.${config.snowflake.schema} as ${config.snowflake.role}`
-  );
 
-  if (!dashboard.isConfigured()) {
-    logger.warn(
-      'No dashboard.config.json yet -- data endpoints will return 503. ' +
-        'Run `npm run introspect` once Snowflake auth works.'
-    );
-  }
 
   freshness.start();
 });
@@ -37,9 +26,6 @@ async function shutdown(signal) {
 
   freshness.stop();
   server.close(async () => {
-    // Close both: either may hold an open pool regardless of the flag,
-    // since scripts and health probes can touch the inactive one.
-    await sf.close();
     await mongo.close();
     logger.info('Shutdown complete');
     process.exit(0);

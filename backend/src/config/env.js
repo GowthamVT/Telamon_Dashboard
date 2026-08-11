@@ -4,9 +4,8 @@
  *
  * Loads backend/.env, validates what must be present, and exposes a frozen
  * config object. Fails fast with an actionable message rather than letting a
- * missing value surface later as a confusing Snowflake auth error.
+ * missing value surface later as a confusing connection error.
  */
-const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -56,66 +55,6 @@ function list(name, fallback = []) {
     .filter(Boolean);
 }
 
-const snowflake = {
-  account: required('SNOWFLAKE_ACCOUNT'),
-  username: required('SNOWFLAKE_USER'),
-  role: optional('SNOWFLAKE_ROLE', 'PUBLIC'),
-  warehouse: required('SNOWFLAKE_WAREHOUSE'),
-  database: required('SNOWFLAKE_DATABASE'),
-  schema: required('SNOWFLAKE_SCHEMA'),
-  privateKeyPath: optional('SNOWFLAKE_PRIVATE_KEY_PATH', 'keys/snowflake_key.p8'),
-  privateKeyPassphrase: optional('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', undefined),
-  // Fallback auth. Key-pair is preferred and used whenever this is unset; set it
-  // only when you cannot register a public key (that needs USERADMIN, which the
-  // PUBLIC role lacks). Read from .env, which is gitignored -- never hardcode it,
-  // and never paste it into a chat/ticket.
-  password: optional('SNOWFLAKE_PASSWORD', undefined),
-  pool: {
-    min: int('SNOWFLAKE_POOL_MIN', 1),
-    max: int('SNOWFLAKE_POOL_MAX', 6),
-    acquireTimeoutMs: int('SNOWFLAKE_POOL_ACQUIRE_TIMEOUT_MS', 30_000),
-    idleTimeoutMs: int('SNOWFLAKE_POOL_IDLE_TIMEOUT_MS', 300_000),
-  },
-  queryTimeoutMs: int('SNOWFLAKE_QUERY_TIMEOUT_MS', 60_000),
-};
-
-if (missing.length > 0) {
-  throw new Error(
-    `Missing required environment variable(s): ${missing.join(', ')}\n` +
-      `Copy backend/.env.example to backend/.env and fill in the values.`
-  );
-}
-
-// Resolve the key path relative to the repo root so the .env value can stay
-// short ("keys/snowflake_key.p8") regardless of where node is launched from.
-const resolvedKeyPath = path.isAbsolute(snowflake.privateKeyPath)
-  ? snowflake.privateKeyPath
-  : path.resolve(REPO_ROOT, snowflake.privateKeyPath);
-
-/**
- * Read the PKCS#8 private key from disk.
- *
- * Deliberately lazy: importing this module must not require key material to
- * exist, so that `npm run keygen` and unit tests work on a fresh clone.
- */
-function readPrivateKey() {
-  if (!fs.existsSync(resolvedKeyPath)) {
-    throw new Error(
-      `Snowflake private key not found at: ${resolvedKeyPath}\n` +
-        `Generate one with:  cd backend && npm run keygen\n` +
-        `Then register the printed public key on the Snowflake user.`
-    );
-  }
-  return fs.readFileSync(resolvedKeyPath, 'utf8');
-}
-
-if (snowflake.pool.min > snowflake.pool.max) {
-  throw new Error(
-    `Config error: SNOWFLAKE_POOL_MIN (${snowflake.pool.min}) cannot exceed ` +
-      `SNOWFLAKE_POOL_MAX (${snowflake.pool.max}).`
-  );
-}
-
 const config = Object.freeze({
   env: optional('NODE_ENV', 'development'),
   isProduction: optional('NODE_ENV', 'development') === 'production',
@@ -125,28 +64,18 @@ const config = Object.freeze({
   paths: Object.freeze({
     repoRoot: REPO_ROOT,
     backendRoot: BACKEND_ROOT,
-    privateKey: resolvedKeyPath,
   }),
 
-  snowflake: Object.freeze({ ...snowflake, resolvedKeyPath }),
-  readPrivateKey,
-
   /**
-   * MongoDB source cluster (the ECSite production database).
+   * MongoDB source cluster (the ECSite production database) -- the ONLY source.
    *
-   * Deliberately NOT validated with required(): Mongo is optional while the
-   * migration is in progress, so a missing MONGO_URI must not stop the Snowflake
-   * path from booting. db/mongo.js raises an actionable error if something tries
-   * to use it unconfigured.
-   *
-   * `enabled` is the migration switch. While false the monitors are served from
-   * Snowflake exactly as before, and the Mongo adapter can be tested directly
-   * without any traffic reaching it.
+   * Required, so a missing value fails at boot with an actionable message rather
+   * than surfacing as an empty dashboard. While Snowflake still existed these
+   * were optional, because the app had to boot without them.
    */
   mongo: Object.freeze({
-    uri: optional('MONGO_URI', ''),
-    database: optional('MONGO_DATABASE', ''),
-    enabled: bool('MONGO_ENABLED', false),
+    uri: required('MONGO_URI'),
+    database: required('MONGO_DATABASE'),
     poolMax: int('MONGO_POOL_MAX', 6),
     queryTimeoutMs: int('MONGO_QUERY_TIMEOUT_MS', 60_000),
     serverSelectionTimeoutMs: int('MONGO_SERVER_SELECTION_TIMEOUT_MS', 15_000),
@@ -171,5 +100,16 @@ const config = Object.freeze({
     rateLimitMaxRequests: int('RATE_LIMIT_MAX_REQUESTS', 300),
   }),
 });
+
+/*
+ * Checked AFTER config is built: the required() calls happen inside the object
+ * literal, so validating before it would always see an empty list.
+ */
+if (missing.length > 0) {
+  throw new Error(
+    `Missing required environment variable(s): ${missing.join(', ')}\n` +
+      `Copy backend/.env.example to backend/.env and fill in the values.`
+  );
+}
 
 module.exports = config;
