@@ -300,15 +300,13 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
      * on one line -- Wadley would read "117/166 - 80%" when 117/166 is 70%.
      */
     const denominator = liveMs.coverageDenominator ?? liveMs.photoFields;
-    const na = Number(liveMs.naFields) || 0;
     return {
       pct,
       color: pctColor(pct),
       label: `${liveMs.fieldsCovered}/${denominator} · ${pct}%`,
-      note: liveMs.photoPctApproximate
-        ? `${liveMs.photos} photos uploaded (exact) · coverage approximate, N/A fields not excluded`
-        : `${liveMs.photos} photos uploaded · ${liveMs.fieldsCovered} of ${denominator} fields complete` +
-          (na > 0 ? ` · ${na} field${na === 1 ? '' : 's'} marked N/A and excluded` : ''),
+      // Sub-label removed by request. The label beside the bar already carries
+      // covered/applicable and the percentage.
+      note: null,
     };
   }, [liveMs, data.photos, overallStatus]);
 
@@ -340,10 +338,15 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
               liveMs.lastReport ? ` · last ${liveMs.lastReport}` : ''
             }`,
       missedDays: liveMs.missedDays ?? null,
+      /*
+       * Definition note removed by request. "no reporting window" is kept for the
+       * null case, because a blank there is indistinguishable from zero and the
+       * two mean different things: never reported, versus missed nothing.
+       */
       missedNote:
         liveMs.missedDays === null || liveMs.missedDays === undefined
           ? 'no reporting window'
-          : 'weekdays with no report, within this node\u2019s reporting window',
+          : null,
     };
   }, [liveMs, data.reports]);
 
@@ -523,12 +526,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                   : `${milestoneView.overallPct}%`
                 : `${summary.overallPct}%`}
             </p>
-            <p className="mon-hero-caption">
-              {milestoneView && milestoneView.stagesTotal
-                ? `STAGES STARTED (${milestoneView.stagesDone}/${milestoneView.stagesTotal})` +
-                  (isPooled ? ` · ${liveMs.nodeCount} NODES` : '')
-                : 'MILESTONE COMPLETION'}
-            </p>
+            {/* Caption removed by request. The card heading MILESTONE PROGRESS
+                already names what the figure measures. */}
           </div>
 
           <div className="mon-hero-right">
@@ -597,15 +596,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       </div>
 
       <StatCards items={cards} />
-      {docStats ? (
-        <p className="mon-cell-sub" style={{ marginTop: -14, marginBottom: 24 }}>
-          {isPooled
-            ? `Pooled across ${liveMs.nodeCount} nodes: ${docStats.types} document types, ${docStats.total} node-by-document pairs. `
-            : `Counted from the ${docStats.total} checklist items listed below, so these cards and the table can never disagree. `} N/A is inferred, not sourced &mdash;{' '}
-          <code>CLOUD_ECSITE_FIELDRESULT.N_A</code> is <code>false</code> or null on all 8.5M rows,
-          so the warehouse carries no N/A flag.
-        </p>
-      ) : null}
+      {/* Explanatory note removed by request. */}
 
       {/* Photos & daily reports -- same figures as the Route Monitor's row for
           this node, read from the same getNodeMetrics source so the two tabs
@@ -717,11 +708,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             {visibleItems.length} of {checklist.length} documents shown ·{' '}
             {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
             {checklist.filter((i) => i.status === 'missing').length} Missing,{' '}
-            {checklist.filter((i) => i.status === 'na').length} N/A · Only items mapped to
-            M1&ndash;M4 are listed. Complete means evidence exists (photos for a photo list, a
-            submission for a form), not sign-off. Item-level N/A is inferred from wording such as
-            &ldquo;if applicable&rdquo;; the per-field N/A flag behind the coverage figure above is
-            real (<code>ProgressStats.n_a</code>).
+            {checklist.filter((i) => i.status === 'na').length} N/A
           </>
         ) : (
           <>
