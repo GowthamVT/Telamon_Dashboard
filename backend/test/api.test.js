@@ -115,7 +115,16 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
   }
 
   if (collection === 'ProgressStats') {
-    return { rows: [{ _id: NODE_ID, fields: 10, completed: 3, naFields: 2, notRequired: 0 }], rowCount: 1, elapsedMs: 1 };
+    /*
+     * 10 fields: 3 done, 2 N/A, 1 Not Required, 4 outstanding.
+     * Both N/A and Not Required must leave the denominator, so coverage is
+     * 3 of 7, not 3 of 10 -- see the portal-parity test below.
+     */
+    return {
+      rows: [{ _id: NODE_ID, fields: 10, completed: 3, naFields: 2, notRequired: 1, incomplete: 4 }],
+      rowCount: 1,
+      elapsedMs: 1,
+    };
   }
 
   return { rows: [], rowCount: 0, elapsedMs: 1 };
@@ -255,16 +264,58 @@ test('GET /api/monitor/route attaches metrics to each row', async () => {
   assert.ok('metrics' in body.nodes[0]);
 });
 
-test('photo coverage uses ProgressStats and excludes N/A from the denominator', async () => {
+test('coverage excludes BOTH N/A and Not Required from the denominator', async () => {
   const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
   const m = body.metrics;
-  // Stub: 10 fields, 3 completed, 2 N/A -> 3 of 8 = 38%, and exact.
+
+  /*
+   * This mirrors the portal's own arithmetic, which is where the rule came from:
+   * on Basile it reports 165 fields and 149 "without media", and 165 - 149 = 16
+   * = Completed (11) + Not Required (5). Neither an N/A nor a Not Required field
+   * is outstanding work, so neither belongs in the denominator.
+   *
+   * Stub: 10 fields, 3 done, 2 N/A, 1 Not Required -> 3 of 7 = 43%.
+   * Excluding only N/A would give 3 of 8 = 38%; excluding neither, 3 of 10 = 30%.
+   */
   assert.equal(m.fieldsCovered, 3);
   assert.equal(m.naFields, 2);
-  assert.equal(m.coverageDenominator, 8);
-  assert.equal(m.photoPct, 38);
+  assert.equal(m.notRequiredFields, 1);
+  assert.equal(m.coverageDenominator, 7, 'both N/A and Not Required must be excluded');
+  assert.equal(m.photoPct, 43);
   assert.equal(m.photoPctApproximate, false);
+  // incompleteFields is the portal's "Total Fields without Media".
+  assert.equal(m.incompleteFields, 4);
   assert.ok(executed.some((e) => e.collection === 'ProgressStats'));
+});
+
+test('item-level N/A is not inferred from wording', async () => {
+  /*
+   * A rule used to mark items N/A when their NAME contained "if applicable" or
+   * "If Required". The portal reports Not Applicable 0 for Basile while that rule
+   * produced 2, so it was removed. Only a genuinely not-required item -- one
+   * absent from the node's checklist -- may be N/A.
+   */
+  const { classifyItemStatus } = require('../src/config/statusVocabulary');
+
+  assert.deepEqual(
+    classifyItemStatus({ name: 'Fencing & Gates - if applicable', done: false, inChecklist: true }),
+    { status: 'missing', statusReason: null },
+    'wording must not produce N/A'
+  );
+  assert.deepEqual(
+    classifyItemStatus({ name: 'Utility Construction (If Required)', done: false, inChecklist: true }),
+    { status: 'missing', statusReason: null }
+  );
+  assert.equal(
+    classifyItemStatus({ name: 'Some Extra Form', done: false, inChecklist: false }).status,
+    'na',
+    'not being in the checklist is a fact, and still yields N/A'
+  );
+  assert.equal(
+    classifyItemStatus({ name: 'Anything - if applicable', done: true, inChecklist: true }).status,
+    'complete',
+    'evidence always wins'
+  );
 });
 
 test('missed days come from weekdays in the observed window', async () => {
