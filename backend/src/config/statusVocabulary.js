@@ -58,40 +58,43 @@ function classifyStatus(raw) {
 }
 
 /**
- * Items the checklist itself marks as conditional. This is the client's own
- * wording -- "Fencing & Gates - if applicable", "Utility Construction (If
- * Required)" -- so it is read from real data, not invented.
+ * RETIRED. This matched item names for "if applicable" / "If Required" and
+ * marked them N/A when they had no evidence.
+ *
+ * It was removed because it contradicted the source. The portal reports
+ * "Not Applicable" = 0 for Basile, taken from the per-FIELD flag
+ * (ProgressStats.n_a, also 0), while this rule produced 2 -- "Fencing & Gates -
+ * if applicable" and "Utility Construction (If Required)". A number the reader
+ * compares against the portal must come from the same place the portal gets it,
+ * not from a guess about wording.
+ *
+ * Kept exported so anything still importing it fails loudly rather than silently
+ * getting undefined.
  */
-const OPTIONAL_ITEM = /\b(if\s+applicable|if\s+required|optional)\b/i;
+const OPTIONAL_ITEM = null;
 
 /**
  * Collapse a checklist item to the three statuses the dashboard reports:
  * Complete / Missing / N/A.
  *
- * ITEM-LEVEL N/A IS INFERRED. There is no per-item N/A flag in the source, so
- * N/A here comes from two signals, both defensible but neither authoritative:
+ * N/A now has exactly ONE meaning at item level: the item is not part of this
+ * node's checklist. It exists on the node as a form but was never required of the
+ * crew, so "Missing" would be a false accusation. That is a fact about the data,
+ * not an inference.
  *
- *   1. The item is not part of this node's checklist at all. It exists on the
- *      node as a form but was never required of the crew, so "missing" would be
- *      a false accusation.
- *   2. The item's own name marks it conditional ("if applicable", "If
- *      Required"). The crew is not expected to complete it unless the site calls
- *      for it, so counting it as missing overstates the gap.
+ * The previous wording-based rule ("if applicable" -> N/A) has been removed; see
+ * OPTIONAL_ITEM above for why.
  *
- * An item with evidence is Complete regardless of either signal -- work that was
- * actually done is never reported as not-applicable.
+ * An item with evidence is Complete regardless -- work that was actually done is
+ * never reported as not-applicable.
  *
- * NOTE: a per-FIELD N/A flag DOES exist -- ProgressStats.n_a -- and it drives the
- * photo-coverage denominator. It is field-level, so it cannot decide the status
- * of a whole checklist item. Do not conflate the two.
+ * The per-FIELD N/A flag (ProgressStats.n_a) is a different thing at a different
+ * grain, and drives the photo-coverage denominator. Do not conflate the two.
  */
 function classifyItemStatus({ name, done, inChecklist }) {
   if (done) return { status: 'complete', statusReason: null };
   if (!inChecklist) {
     return { status: 'na', statusReason: 'not required by this node’s checklist' };
-  }
-  if (OPTIONAL_ITEM.test(name || '')) {
-    return { status: 'na', statusReason: 'the checklist marks this item conditional' };
   }
   return { status: 'missing', statusReason: null };
 }

@@ -254,6 +254,8 @@ function poolMetrics(byNode) {
     photosAllMedia: sum('photosAllMedia'),
     fieldsCovered,
     naFields: sum('naFields'),
+    notRequiredFields: sum('notRequiredFields'),
+    incompleteFields: sum('incompleteFields'),
     coverageDenominator: denominator,
     photoPct: denominator > 0 ? Math.min(100, Math.round((fieldsCovered / denominator) * 100)) : null,
     photoPctApproximate: nodes.some((n) => n.photoPctApproximate),

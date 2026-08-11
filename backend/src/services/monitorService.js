@@ -670,6 +670,8 @@ async function getNodeMetrics(scope = {}) {
               completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
               naFields: { $sum: { $cond: [{ $eq: ['$n_a', true] }, 1, 0] } },
               notRequired: { $sum: { $cond: [{ $eq: ['$status', 'Not Required'] }, 1, 0] } },
+              // The portal's "Total Fields without Media" is exactly this count.
+              incomplete: { $sum: { $cond: [{ $eq: ['$status', 'In-Complete'] }, 1, 0] } },
             },
           },
         ],
@@ -759,13 +761,23 @@ async function getNodeMetrics(scope = {}) {
       const cov = coverageByNode.get(nodeId) || null;
       const exactCoverage = Boolean(cov && Number(cov.fields) > 0);
       const naFields = cov ? Number(cov.naFields) || 0 : 0;
+      const notRequiredFields = cov ? Number(cov.notRequired) || 0 : 0;
+      const incompleteFields = cov ? Number(cov.incomplete) || 0 : 0;
       const fieldsCovered = exactCoverage
         ? Number(cov.completed) || 0
         : Number(m.fieldsCovered) || 0;
-      // Denominator excludes N/A: a field that does not apply should not count
-      // against the node. This is what the portal's "Total Fields Count" shows.
+
+      /*
+       * Denominator = done + still outstanding, matching the portal's arithmetic.
+       *
+       * Basile: the portal reports 165 fields and 149 "without media", and
+       * 165 - 149 = 16 = Completed (11) + Not Required (5). So a Not Required
+       * field is not outstanding work and must not sit in the denominator, for
+       * the same reason an N/A field does not. Excluding only N/A left Basile at
+       * 11/165 where the portal's own figures imply 11/160.
+       */
       const coverageDenominator = exactCoverage
-        ? Math.max(Number(cov.fields) - naFields, 0)
+        ? Math.max(Number(cov.fields) - naFields - notRequiredFields, 0)
         : photoFields;
 
       // NULL, not 0, when the node never reported: there is no window to measure,
@@ -808,8 +820,12 @@ async function getNodeMetrics(scope = {}) {
         photos: photosByNode.get(nodeId) || 0,
         photosAllMedia: Number(m.photosAll) || 0,
         fieldsCovered,
-        /** Fields the app marks N/A, excluded from the denominator below. */
+        /** Fields the app marks N/A, excluded from the denominator. */
         naFields,
+        /** Fields the app marks Not Required -- also excluded. */
+        notRequiredFields,
+        /** Matches the portal's "Total Fields without Media". */
+        incompleteFields,
         coverageDenominator,
         photoPct:
           coverageDenominator > 0
