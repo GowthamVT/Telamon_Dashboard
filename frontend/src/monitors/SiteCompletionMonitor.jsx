@@ -70,6 +70,13 @@ function ChecklistRow({ item }) {
     || ITEM_STATUS_PRESENTATION.missing;
   const isPhotos = item.kind === 'photolist';
 
+  /*
+   * When the scope spans several nodes the row is a rollup, so the STATUS column
+   * shows "12 of 63 complete" rather than one word -- "Complete" cannot describe
+   * 63 nodes, some of which are and some of which are not.
+   */
+  const rollup = item.aggregated === true && item.nodeCount > 1;
+
   const evidence = isPhotos
     ? item.photos > 0
       ? `${item.photos} photos of ${item.photoFields} field${item.photoFields === 1 ? '' : 's'}`
@@ -83,6 +90,7 @@ function ChecklistRow({ item }) {
   const detail = [
     item.section,
     KIND_LABEL[item.kind] || null,
+    rollup ? `across ${item.nodeCount} nodes` : null,
     evidence,
     item.lastPhoto ? `last photo ${item.lastPhoto}` : null,
     !isPhotos && item.lastSubmission ? `last ${item.lastSubmission}` : null,
@@ -103,7 +111,9 @@ function ChecklistRow({ item }) {
       </div>
       <div className="mon-docstatus" style={{ color }}>
         <Icon size={16} aria-hidden="true" />
-        <span>{label}</span>
+        <span>
+          {rollup ? `${item.completeCount} of ${item.nodeCount} complete` : label}
+        </span>
       </div>
     </div>
   );
@@ -352,14 +362,36 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    */
   const docStats = useMemo(() => {
     if (!checklist) return null;
-    const total = checklist.length;
-    const complete = checklist.filter((i) => i.status === 'complete').length;
-    const missing = checklist.filter((i) => i.status === 'missing').length;
-    const na = checklist.filter((i) => i.status === 'na').length;
-    // N/A items are excluded from the denominator: an item that does not apply
-    // should not count against the node, the same way the mock data treated it.
+    const pooled = checklist.some((i) => i.aggregated && i.nodeCount > 1);
+
+    /*
+     * Pooled scope counts node-by-item pairs, not document types.
+     *
+     * Counting types by their MAJORITY status made All and a single route report
+     * the same 8 missing / 2 N-A, because both had 12 types and similar
+     * majorities -- a rollup that does not grow with its scope is not a rollup.
+     * Summing the per-node counts restores All >= route >= node.
+     */
+    const total = pooled
+      ? checklist.reduce((t, i) => t + (i.nodeCount || 0), 0)
+      : checklist.length;
+    const complete = pooled
+      ? checklist.reduce((t, i) => t + (i.completeCount || 0), 0)
+      : checklist.filter((i) => i.status === 'complete').length;
+    const missing = pooled
+      ? checklist.reduce((t, i) => t + (i.missingCount || 0), 0)
+      : checklist.filter((i) => i.status === 'missing').length;
+    const na = pooled
+      ? checklist.reduce((t, i) => t + (i.naCount || 0), 0)
+      : checklist.filter((i) => i.status === 'na').length;
+
+    // N/A is excluded from the denominator: an item that does not apply should
+    // not count against the node.
     const applicable = total - na;
     return {
+      pooled,
+      /** Distinct document types, for the label when pooling. */
+      types: checklist.length,
       total,
       complete,
       missing,
@@ -368,9 +400,16 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     };
   }, [checklist]);
 
+  /** True when the payload is a rollup rather than one node. */
+  const isPooled = Boolean(liveMs && liveMs.aggregated);
+
   const cards = docStats
     ? [
-        { label: 'TOTAL DOCUMENTS', value: docStats.total, color: '#F7F8FB' },
+        {
+          label: isPooled ? 'DOCUMENT TYPES' : 'TOTAL DOCUMENTS',
+          value: isPooled ? docStats.types : docStats.total,
+          color: '#F7F8FB',
+        },
         {
           label: 'UPLOADED %',
           value: docStats.pct === null ? '--' : `${docStats.pct}%`,
@@ -424,7 +463,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             ? isAggregate
               ? `${live.nodeCount} sites · ${
                   live.site.companyName || `${live.site.companyCount} companies`
-                } · detail below is for ${live.site.detailName}`
+                } · figures below are pooled across all of them`
               : `Started ${startDate} · ${live.site.companyName} · node status ${live.site.workStatus}`
             : `Started ${startDate}`
         }
@@ -486,7 +525,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             </p>
             <p className="mon-hero-caption">
               {milestoneView && milestoneView.stagesTotal
-                ? `STAGES COMPLETE (${milestoneView.stagesDone}/${milestoneView.stagesTotal})`
+                ? `STAGES STARTED (${milestoneView.stagesDone}/${milestoneView.stagesTotal})` +
+                  (isPooled ? ` · ${liveMs.nodeCount} NODES` : '')
                 : 'MILESTONE COMPLETION'}
             </p>
           </div>
@@ -559,8 +599,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       <StatCards items={cards} />
       {docStats ? (
         <p className="mon-cell-sub" style={{ marginTop: -14, marginBottom: 24 }}>
-          Counted from the {docStats.total} checklist items listed below, so these cards and the
-          table can never disagree. N/A is inferred, not sourced &mdash;{' '}
+          {isPooled
+            ? `Pooled across ${liveMs.nodeCount} nodes: ${docStats.types} document types, ${docStats.total} node-by-document pairs. `
+            : `Counted from the ${docStats.total} checklist items listed below, so these cards and the table can never disagree. `} N/A is inferred, not sourced &mdash;{' '}
           <code>CLOUD_ECSITE_FIELDRESULT.N_A</code> is <code>false</code> or null on all 8.5M rows,
           so the warehouse carries no N/A flag.
         </p>

@@ -79,13 +79,16 @@ async function composeSiteMonitor(scope, deps) {
   ]);
 
   /*
-   * AGGREGATE vs SINGLE NODE -- same reasoning as the route view.
+   * AGGREGATE vs SINGLE NODE.
    *
-   * The Site Monitor is a node-level view, so the cards below the header always
-   * describe ONE node. When no node is picked we still show the first one (that
-   * is the existing behaviour), but `name` is null so the header cannot claim to
-   * BE that node; `detailName` names it explicitly instead, and the UI attributes
-   * the cards to it.
+   * With a nodeId the cards describe that node. WITHOUT one they describe every
+   * node in scope, POOLED -- not the first node in scope, which is what this used
+   * to do. That made "All sites" look empty purely because ARGONNE-CAMPUS sorts
+   * first alphabetically and is a DAS node with no M1-M4 stages, while selecting a
+   * route showed values. All therefore appeared to contain less than its own
+   * subsets, which cannot be true of a rollup.
+   *
+   * Now: All >= route >= node, always.
    */
   const aggregate = !scope.nodeId;
   const selected = aggregate
@@ -101,26 +104,31 @@ async function composeSiteMonitor(scope, deps) {
   const siteIds = new Set(nodes.nodes.map((n) => n.siteId).filter(Boolean));
   const companies = new Set(nodes.nodes.map((n) => n.companyName).filter(Boolean));
 
-  /*
-   * Milestone, stage and checklist detail for the ONE node on display.
-   *
-   * Re-scoped to that node rather than reusing the incoming scope: without a
-   * nodeId the scope could span a whole company, and computing stage rows for
-   * 200 nodes to render one would be wasteful.
-   */
   let metrics = null;
   let stages = null;
   let checklist = null;
-  if (selected) {
+
+  if (selected && !aggregate) {
+    // One node: unchanged.
     const nodeScope = { ...deps.companyScopeOf(scope), nodeId: selected.nodeId };
-    const [m, s, c] = await Promise.all([
+    const [m, st, c] = await Promise.all([
       deps.getNodeMetrics(nodeScope),
       deps.getNodeStages(nodeScope),
       deps.getNodeChecklist(nodeScope),
     ]);
     metrics = m.byNode[selected.nodeId] || null;
-    stages = s.byNode[selected.nodeId] || [];
+    stages = st.byNode[selected.nodeId] || [];
     checklist = c.byNode[selected.nodeId] || [];
+  } else if (selected) {
+    // Whole scope, pooled.
+    const [m, st, c] = await Promise.all([
+      deps.getNodeMetrics(scope),
+      deps.getNodeStages(scope),
+      deps.getNodeChecklist(scope),
+    ]);
+    metrics = poolMetrics(m.byNode);
+    stages = poolStages(st.byNode);
+    checklist = poolChecklist(c.byNode);
   }
 
   return {
@@ -158,6 +166,177 @@ async function composeSiteMonitor(scope, deps) {
       reason: m.unmeasurableReason || null,
     })),
   };
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Rollups for the aggregate case.
+ *
+ * Everything here POOLS -- sums numerators and denominators -- rather than
+ * averaging per-node percentages. Averaging would weight a node with 3 photo
+ * fields the same as one with 166.
+ * ------------------------------------------------------------------------- */
+
+/** Milestones and figures pooled across every node in scope. */
+function poolMetrics(byNode) {
+  const nodes = Object.values(byNode);
+  if (!nodes.length) return null;
+
+  const sum = (f) => nodes.reduce((t, n) => t + (Number(n[f]) || 0), 0);
+
+  /*
+   * A milestone is measurable in aggregate if ANY node in scope can measure it.
+   * Nodes on templates with no M1-M4 stages contribute 0/0, so they neither help
+   * nor penalise -- which is why All is no longer dragged to "--" by the 139
+   * nodes that have no milestone stages.
+   */
+  const order = [];
+  const byKey = new Map();
+  for (const n of nodes) {
+    for (const ms of n.milestones || []) {
+      if (!byKey.has(ms.key)) {
+        order.push(ms.key);
+        byKey.set(ms.key, {
+          key: ms.key, label: ms.label, name: ms.name, reason: ms.reason,
+          done: 0, total: 0, nodes: 0,
+        });
+      }
+      const acc = byKey.get(ms.key);
+      if (ms.total > 0) {
+        acc.done += Number(ms.done) || 0;
+        acc.total += Number(ms.total) || 0;
+        acc.nodes += 1;
+      }
+    }
+  }
+
+  const milestones = order.map((k) => {
+    const a = byKey.get(k);
+    const measurable = a.total > 0;
+    return {
+      key: a.key,
+      label: a.label,
+      name: a.name,
+      measurable,
+      reason: measurable ? undefined : a.reason,
+      done: a.done,
+      total: a.total,
+      pct: measurable ? Math.round((a.done / a.total) * 100) : null,
+      /** How many nodes contributed, so the UI can say what the bar covers. */
+      nodes: a.nodes,
+    };
+  });
+
+  const photoFields = sum('photoFields');
+  const fieldsCovered = sum('fieldsCovered');
+  const denominator =
+    nodes.reduce((t, n) => t + (Number(n.coverageDenominator) || 0), 0) || photoFields;
+
+  // Nodes that never reported have missedDays null; they contribute nothing
+  // rather than a fabricated zero.
+  const withWindow = nodes.filter((n) => n.missedDays !== null && n.missedDays !== undefined);
+  const lastReports = nodes.map((n) => n.lastReport).filter(Boolean).sort();
+
+  return {
+    aggregated: true,
+    nodeCount: nodes.length,
+    milestonesMapped: nodes.some((n) => n.milestonesMapped),
+    mappedStages: sum('mappedStages'),
+    totalStages: sum('totalStages'),
+    stagePhotos: sum('stagePhotos'),
+    milestones,
+    reports: sum('reports'),
+    reportDays: sum('reportDays'),
+    lastReport: lastReports.length ? lastReports[lastReports.length - 1] : null,
+    missedDays: withWindow.length ? withWindow.reduce((t, n) => t + n.missedDays, 0) : null,
+    photoFields,
+    photos: sum('photos'),
+    photosAllMedia: sum('photosAllMedia'),
+    fieldsCovered,
+    naFields: sum('naFields'),
+    coverageDenominator: denominator,
+    photoPct: denominator > 0 ? Math.min(100, Math.round((fieldsCovered / denominator) * 100)) : null,
+    photoPctApproximate: nodes.some((n) => n.photoPctApproximate),
+  };
+}
+
+/** Stages pooled by stage name: one row per distinct stage across the scope. */
+function poolStages(byNode) {
+  const acc = new Map();
+  for (const list of Object.values(byNode)) {
+    for (const st of list) {
+      if (!acc.has(st.stage)) {
+        acc.set(st.stage, {
+          stage: st.stage, milestone: st.milestone, photoFields: 0, photos: 0,
+          fieldsCovered: 0, lastPhoto: null, nodes: 0, startedNodes: 0,
+        });
+      }
+      const a = acc.get(st.stage);
+      a.photoFields += st.photoFields;
+      a.photos += st.photos;
+      a.fieldsCovered += st.fieldsCovered;
+      a.nodes += 1;
+      if (st.started) a.startedNodes += 1;
+      if (st.lastPhoto && (!a.lastPhoto || st.lastPhoto > a.lastPhoto)) a.lastPhoto = st.lastPhoto;
+    }
+  }
+  return [...acc.values()]
+    .map((a) => ({ ...a, started: a.photos > 0, aggregated: true }))
+    .sort((x, y) => y.photos - x.photos || String(x.stage).localeCompare(String(y.stage)));
+}
+
+/**
+ * Checklist pooled by document name: one row per distinct item across the scope,
+ * carrying how many nodes are complete / missing / n-a.
+ *
+ * `status` is still set so the existing renderer works, using the majority state,
+ * but nodeCount and completeCount are what the UI should show when aggregating --
+ * a single word cannot describe 63 nodes at once.
+ */
+function poolChecklist(byNode) {
+  const acc = new Map();
+  for (const list of Object.values(byNode)) {
+    for (const it of list) {
+      if (!acc.has(it.name)) {
+        acc.set(it.name, {
+          name: it.name, kind: it.kind, milestone: it.milestone, section: it.section,
+          stage: it.stage, position: it.position, sequence: it.sequence,
+          formId: null, statusReason: null, inChecklist: true,
+          photoFields: 0, photos: 0, submissions: 0, lastPhoto: null, lastSubmission: null,
+          nodeCount: 0, completeCount: 0, missingCount: 0, naCount: 0,
+        });
+      }
+      const a = acc.get(it.name);
+      a.nodeCount += 1;
+      if (it.status === 'complete') a.completeCount += 1;
+      else if (it.status === 'missing') a.missingCount += 1;
+      else a.naCount += 1;
+      a.photoFields += it.photoFields || 0;
+      a.photos += it.photos || 0;
+      a.submissions += it.submissions || 0;
+      if (it.lastPhoto && (!a.lastPhoto || it.lastPhoto > a.lastPhoto)) a.lastPhoto = it.lastPhoto;
+      if (it.lastSubmission && (!a.lastSubmission || it.lastSubmission > a.lastSubmission)) {
+        a.lastSubmission = it.lastSubmission;
+      }
+      if (!a.milestone && it.milestone) a.milestone = it.milestone;
+    }
+  }
+  return [...acc.values()]
+    .map((a) => ({
+      ...a,
+      aggregated: true,
+      done: a.completeCount > 0,
+      status:
+        a.completeCount >= a.missingCount && a.completeCount >= a.naCount
+          ? 'complete'
+          : a.missingCount >= a.naCount
+            ? 'missing'
+            : 'na',
+    }))
+    .sort(
+      (x, y) =>
+        (x.sequence ?? 9999) - (y.sequence ?? 9999) || String(x.name).localeCompare(String(y.name))
+    );
 }
 
 module.exports = { composeRouteMonitor, composeSiteMonitor };
