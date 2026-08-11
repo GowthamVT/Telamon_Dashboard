@@ -29,7 +29,7 @@ const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 const EMPTY_TRACK = '#2A3142';
 
 /** Filter pills use the same words as the STATUS column. */
-const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'Not Started'];
+const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'N/A'];
 
 
 /** m1 < m2 < m3 < m4 < m5 < unmapped, so unmapped tasks read as an appendix. */
@@ -47,10 +47,17 @@ function milestoneRank(key) {
 const ITEM_STATUS_PRESENTATION = {
   complete: { color: '#34E0A1', label: 'Complete', Icon: CircleCheck },
   inProgress: { color: '#F5B133', label: 'In Progress', Icon: Circle },
-  notStarted: { color: '#5A6478', label: 'Not Started', Icon: Circle },
+  /*
+   * Shown as "N/A", by request.
+   *
+   * The underlying tracker state is "no date and no acceptance recorded", which
+   * this dashboard used to word as "Not Started". The key stays `notStarted`
+   * because that is what the tracker means; only the label changed.
+   */
+  notStarted: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
   rejected: { color: '#F0576E', label: 'Rejected', Icon: CircleMinus },
   // Retained so a stale payload cannot blank the column.
-  missing: { color: '#5A6478', label: 'Not Started', Icon: Circle },
+  missing: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
   na: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
 };
 
@@ -249,7 +256,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const visibleItems = useMemo(() => {
     if (!checklist) return null;
     const q = query.trim().toLowerCase();
-    const WANTED = { Complete: 'complete', 'In Progress': 'inProgress', 'Not Started': 'notStarted' };
+    const WANTED = { Complete: 'complete', 'In Progress': 'inProgress', 'N/A': 'notStarted' };
 
     let out = checklist.filter((it) => {
       const text = `${it.task || ''} ${it.taskId || ''}`.toLowerCase();
@@ -434,9 +441,10 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         },
         { label: 'IN PROGRESS', value: docStats.inProgress, color: '#F5B133' },
         {
-          label: 'NOT STARTED',
+          label: 'N/A',
           value: docStats.notStarted,
-          color: docStats.notStarted > 0 ? DANGER : statusColor(STATUS.COMPLETE),
+          // Grey, not red: N/A is a neutral state, so it must not read as an alarm.
+          color: '#9098A9',
         },
         {
           label: 'MILESTONES DONE',
@@ -558,9 +566,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                   color: statusColor(STATUS.IN_PROGRESS),
                 },
                 {
-                  label: 'Not Started',
+                  label: 'N/A',
                   value: milestoneView ? milestoneView.notStarted : summary.milestonesNotStarted,
-                  color: statusColor(STATUS.YET_TO_START),
+                  // Matches the N/A grey in the STATUS column, so one word is never
+                  // shown in two colours on the same screen.
+                  color: '#9098A9',
                 },
               ]}
             />
@@ -730,7 +740,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             {visibleItems.length} of {checklist.length} tracker tasks shown ·{' '}
             {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
             {checklist.filter((i) => i.status === 'inProgress').length} In Progress,{' '}
-            {checklist.filter((i) => i.status === 'notStarted').length} Not Started
+            {checklist.filter((i) => i.status === 'notStarted').length} N/A
           </>
         ) : (
           <>
