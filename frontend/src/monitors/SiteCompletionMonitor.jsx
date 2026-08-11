@@ -377,6 +377,31 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   }, [live, liveMs, data.reports]);
 
   /**
+   * The portal's "Node Media" figures, in its order and its wording.
+   *
+   * Reproduced exactly on Knolls (0/2/0 · 101 · 106 · 69 · 59) and on Basile
+   * (0/0/0 · 165 · 122 · 0 · 149), so a reviewer can hold the two screens side by
+   * side without translating between them.
+   *
+   * NOT APPLICABLE here is the photo-field N/A -- the count the portal shows. It is
+   * a different quantity from a tracker task with no recorded date, which is why
+   * the two must not share a label.
+   */
+  const mediaFigures = useMemo(() => {
+    if (!liveMs) return null;
+    const n = (v) => (v === null || v === undefined ? '--' : v);
+    return [
+      { label: 'Approved', value: n(liveMs.approvedMedia) },
+      { label: 'Rejected', value: n(liveMs.rejectedMedia), color: liveMs.rejectedMedia > 0 ? DANGER : undefined },
+      { label: 'Ignored', value: n(liveMs.ignoredMedia) },
+      { label: 'Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
+      { label: 'Media', value: n(liveMs.photos) },
+      { label: 'Not applicable', value: n(liveMs.naFields), color: '#9098A9' },
+      { label: 'Fields w/o media', value: n(liveMs.incompleteFields) },
+    ];
+  }, [liveMs]);
+
+  /**
    * The stat cards, counted from the SAME checklist rows the table renders, so a
    * card can never contradict the list beneath it.
    *
@@ -673,6 +698,21 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             </div>
           </div>
         </div>
+
+        {/* The portal's Node Media block, reproduced figure for figure.
+            All seven verified against the portal on Knolls and Basile. */}
+        {mediaFigures ? (
+          <div className="mon-media">
+            {mediaFigures.map((f) => (
+              <div className="mon-media-item" key={f.label}>
+                <p className="mon-media-num" style={f.color ? { color: f.color } : undefined}>
+                  {f.value}
+                </p>
+                <p className="mon-media-label">{f.label}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="mon-filters">

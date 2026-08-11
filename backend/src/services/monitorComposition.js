@@ -284,8 +284,15 @@ function poolMetrics(byNode) {
     lastReport: lastReports.length ? lastReports[lastReports.length - 1] : null,
     missedDays: withWindow.length ? withWindow.reduce((t, n) => t + n.missedDays, 0) : null,
     photoFields,
+    // Sum the per-node applicable counts -- do NOT recompute as photoFields minus
+    // naFields, because the two come from different sources on nodes with no
+    // ProgressStats documents and would disagree.
+    fieldsApplicable: sum('fieldsApplicable'),
     photos: sum('photos'),
     photosAllMedia: sum('photosAllMedia'),
+    approvedMedia: sum('approvedMedia'),
+    rejectedMedia: sum('rejectedMedia'),
+    ignoredMedia: sum('ignoredMedia'),
     fieldsCovered,
     naFields: sum('naFields'),
     notRequiredFields: sum('notRequiredFields'),

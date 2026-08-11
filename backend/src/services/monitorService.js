@@ -633,11 +633,32 @@ async function getNodeMetrics(scope = {}) {
           { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: photolistFormIds } } },
           { $unwind: '$nodeIdList' },
           { $match: { nodeIdList: { $in: nodeIds }, isDeleted: { $ne: true } } },
-          { $group: { _id: '$nodeIdList', photos: { $sum: 1 } } },
+          {
+            $group: {
+              _id: '$nodeIdList',
+              photos: { $sum: 1 },
+              /*
+               * The reviewer's decision per media row: FieldMedia.approvalStatus.
+               *
+               * NOT `status`, which is null on every one of Knolls' 106 rows and is
+               * why the dashboard reported 0 rejected where the portal says 2.
+               *
+               * Values in use across the database: Approved 55435, Rejected 1243,
+               * Ignore 316, Pending 2. Note "Ignore", singular, while the portal
+               * heading reads "Total Ignored Media" -- both spellings are accepted
+               * so a later data fix cannot silently zero the figure.
+               */
+              approvedMedia: { $sum: { $cond: [{ $eq: ['$approvalStatus', 'Approved'] }, 1, 0] } },
+              rejectedMedia: { $sum: { $cond: [{ $eq: ['$approvalStatus', 'Rejected'] }, 1, 0] } },
+              ignoredMedia: {
+                $sum: { $cond: [{ $in: ['$approvalStatus', ['Ignore', 'Ignored']] }, 1, 0] },
+              },
+            },
+          },
         ],
         { label: 'mongo-metrics-photolist-media' }
       );
-      rows.forEach((r) => photosByNode.set(r._id, r.photos));
+      rows.forEach((r) => photosByNode.set(r._id, r));
     }
 
     /* ---- 5b. EXACT photo coverage and the N/A flag, from ProgressStats ----
@@ -679,8 +700,35 @@ async function getNodeMetrics(scope = {}) {
               completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } },
               naFields: { $sum: { $cond: [{ $eq: ['$n_a', true] }, 1, 0] } },
               notRequired: { $sum: { $cond: [{ $eq: ['$status', 'Not Required'] }, 1, 0] } },
-              // The portal's "Total Fields without Media" is exactly this count.
-              incomplete: { $sum: { $cond: [{ $eq: ['$status', 'In-Complete'] }, 1, 0] } },
+              /*
+               * "Total Fields without Media" excludes N/A -- verified on Knolls.
+               *
+               * An earlier version counted every In-Complete field and reported 128
+               * where the portal says 59. Knolls splits In-Complete into 69 with
+               * n_a=true and 59 with n_a=false, and the portal counts only the
+               * second group. Basile could not have caught this: its n_a is 0, so
+               * both readings gave 149.
+               */
+              incomplete: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $eq: ['$status', 'In-Complete'] }, { $ne: ['$n_a', true] }] },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              /* Completed and Not Required, N/A excluded, so the three parts sum to
+                 the applicable field count: Knolls 59 + 38 + 4 = 101. */
+              completedApplicable: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $eq: ['$status', 'Completed'] }, { $ne: ['$n_a', true] }] },
+                    1,
+                    0,
+                  ],
+                },
+              },
             },
           },
         ],
@@ -759,6 +807,7 @@ async function getNodeMetrics(scope = {}) {
       const f = fieldsByNode.get(nodeId) || { photoFields: 0 };
       const m = mediaByNode.get(nodeId) || { photosAll: 0, fieldsCovered: 0 };
       const r = reportsByNode.get(nodeId) || null;
+      const pm = photosByNode.get(nodeId) || null;
       const photoFields = Number(f.photoFields) || 0;
 
       /*
@@ -773,8 +822,21 @@ async function getNodeMetrics(scope = {}) {
       const notRequiredFields = cov ? Number(cov.notRequired) || 0 : 0;
       const incompleteFields = cov ? Number(cov.incomplete) || 0 : 0;
       const fieldsCovered = exactCoverage
-        ? Number(cov.completed) || 0
+        ? Number(cov.completedApplicable) || 0
         : Number(m.fieldsCovered) || 0;
+
+      /*
+       * The portal's "Total Fields Count" EXCLUDES N/A fields.
+       *
+       * Knolls holds 170 ProgressStats documents, 69 of them N/A, and the portal
+       * reports 101 -- which is 170 - 69, and which decomposes exactly into the
+       * three states it also reports: 59 without media + 38 completed + 4 not
+       * required. So an N/A field is not part of the field count at all, and
+       * reporting 170 overstated the work on that node by two thirds.
+       */
+      const fieldsApplicable = exactCoverage
+        ? Math.max(Number(cov.fields) - naFields, 0)
+        : photoFields;
 
       /*
        * Denominator = done + still outstanding, matching the portal's arithmetic.
@@ -826,14 +888,34 @@ async function getNodeMetrics(scope = {}) {
         missedDays,
 
         photoFields,
-        photos: photosByNode.get(nodeId) || 0,
+        /**
+         * The portal's "Total Fields Count": photo fields excluding N/A.
+         *
+         * `photoFields` is the raw count from the photolist definition and is kept
+         * for the approximate path; this is the figure the portal shows.
+         */
+        fieldsApplicable,
+        photos: pm ? Number(pm.photos) || 0 : 0,
         photosAllMedia: Number(m.photosAll) || 0,
+        /**
+         * Reviewer decisions, matching the portal's first three headings.
+         *
+         * Scoped to PHOTOLIST media, the same set as `photos` -- which is the figure
+         * the portal calls "Total Media Count" (Basile 122, not the 307 rows across
+         * all forms). UNVERIFIED against the portal: both nodes with published
+         * figures have zero approvals, so the scoping is inferred from sitting in the
+         * same header row rather than confirmed. Wadley would settle it (photolist
+         * 686 vs all 1005 media, 440 approved).
+         */
+        approvedMedia: pm ? Number(pm.approvedMedia) || 0 : 0,
+        rejectedMedia: pm ? Number(pm.rejectedMedia) || 0 : 0,
+        ignoredMedia: pm ? Number(pm.ignoredMedia) || 0 : 0,
         fieldsCovered,
-        /** Fields the app marks N/A, excluded from the denominator. */
+        /** Fields the app marks N/A. The portal's "Not Applicable". */
         naFields,
-        /** Fields the app marks Not Required -- also excluded. */
+        /** Fields the app marks Not Required -- excluded from the denominator. */
         notRequiredFields,
-        /** Matches the portal's "Total Fields without Media". */
+        /** The portal's "Total Fields without Media" -- In-Complete, N/A excluded. */
         incompleteFields,
         coverageDenominator,
         photoPct:

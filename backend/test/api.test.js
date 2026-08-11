@@ -116,12 +116,25 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
 
   if (collection === 'ProgressStats') {
     /*
-     * 10 fields: 3 done, 2 N/A, 1 Not Required, 4 outstanding.
-     * Both N/A and Not Required must leave the denominator, so coverage is
-     * 3 of 7, not 3 of 10 -- see the portal-parity test below.
+     * 10 ProgressStats documents: 2 N/A, so 8 APPLICABLE fields -- which is what the
+     * portal calls "Total Fields Count". Of those 8: 3 completed, 1 Not Required,
+     * 4 without media. Coverage excludes both N/A and Not Required, so 3 of 7.
+     *
+     * `completedApplicable` and `incomplete` are already N/A-excluded, matching the
+     * aggregation, because the portal counts neither an N/A field's completion nor
+     * an N/A field's missing media.
      */
     return {
-      rows: [{ _id: NODE_ID, fields: 10, completed: 3, naFields: 2, notRequired: 1, incomplete: 4 }],
+      rows: [
+        {
+          _id: NODE_ID,
+          fields: 10,
+          completedApplicable: 3,
+          naFields: 2,
+          notRequired: 1,
+          incomplete: 4,
+        },
+      ],
       rowCount: 1,
       elapsedMs: 1,
     };
@@ -322,6 +335,29 @@ test('coverage excludes BOTH N/A and Not Required from the denominator', async (
   // incompleteFields is the portal's "Total Fields without Media".
   assert.equal(m.incompleteFields, 4);
   assert.ok(executed.some((e) => e.collection === 'ProgressStats'));
+});
+
+test('the portal Total Fields Count excludes N/A fields', async () => {
+  /*
+   * Knolls is the case that proved this: 170 ProgressStats documents, 69 of them
+   * N/A, and the portal reports 101 = 170 - 69. It decomposes exactly into the
+   * three states the portal also shows -- 59 without media + 38 completed + 4 not
+   * required -- so an N/A field is outside the field count entirely.
+   *
+   * Basile could not have caught it. Its N/A is 0, so both readings gave 165.
+   *
+   * Stub: 10 documents, 2 N/A -> 8 applicable = 4 without media + 3 done + 1 not
+   * required.
+   */
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  const m = body.metrics;
+  assert.equal(m.fieldsApplicable, 8, 'Total Fields Count must exclude N/A');
+  assert.equal(
+    m.incompleteFields + m.fieldsCovered + m.notRequiredFields,
+    m.fieldsApplicable,
+    'the three states must account for every applicable field'
+  );
+  assert.equal(m.photoFields, 10, 'the raw photolist count stays available');
 });
 
 test('item-level N/A is not inferred from wording', async () => {
