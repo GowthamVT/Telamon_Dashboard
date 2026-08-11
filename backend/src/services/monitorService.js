@@ -73,6 +73,15 @@ const {
   classifyStage,
 } = require('../config/milestones');
 
+/** The tracker is the client's own milestone definition -- see config/tracker.js. */
+const {
+  TRACKER_FORM_NAME,
+  TRACKER_MILESTONES,
+  milestoneForTask,
+  trackerTaskStatus,
+  isSectionHeader,
+} = require('../config/tracker');
+
 /**
  * Header/payload assembly is shared with monitorService rather than copied. The
  * aggregate and `name: null` handling was itself a bug fix; two copies means the
@@ -840,6 +849,193 @@ async function getNodeMetrics(scope = {}) {
 }
 
 /* ---------------------------------------------------------------------------
+ * TELAMON-ILA-TRACKER
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The node's tracker entries: one row per task, with its milestone and status.
+ *
+ * This is the client's own milestone definition, so it is the source for both the
+ * milestone card and the document table. See config/tracker.js for why, and for
+ * the Task ID group mapping.
+ *
+ * Three collections, in order:
+ *   FormBuilderQuestions   the tracker FORM on this node, plus its field labels
+ *   FieldResult            the submitted values -- one document per FIELD
+ *   answerSetId            groups those fields back into one task row
+ *
+ * The values live in FieldResult, NOT FormBuilderAnswers. FormBuilderAnswers holds
+ * only the submission envelope and has no value column at all, which is why an
+ * earlier attempt to read tracker answers from it found nothing.
+ *
+ * EXPECT EMPTY. The tracker is configured on 63 Telamon nodes and filled in on
+ * exactly one -- LUMEN-ILA-SANDBOX. Every production node returns [], and the
+ * portal agrees: Basile reads "TELAMON-ILA-TRACKER (0)".
+ */
+async function getNodeTracker(scope = {}) {
+  return cache.wrap('mongo-monitor-node-tracker', scope, async () => {
+    const started = Date.now();
+    const match = await buildMatch(scope);
+
+    const { rows: scoped } = await mongo.aggregate(
+      NODES,
+      [{ $match: match }, { $project: { _id: 0, nodeId: 1 } }],
+      { label: 'mongo-tracker-scope' }
+    );
+    const nodeIds = scoped.map((n) => n.nodeId).filter(Boolean);
+    if (!nodeIds.length) return { byNode: {}, elapsedMs: Date.now() - started };
+
+    /* ---- 1. the tracker form on each node, and its field labels ---- */
+    const { rows: forms } = await mongo.aggregate(
+      'FormBuilderQuestions',
+      [
+        ...unwindToNodes(nodeIds),
+        { $match: { formName: TRACKER_FORM_NAME, isDeleted: { $ne: true } } },
+        {
+          $project: {
+            nodeId: '$nodeIdList',
+            formId: { $toString: '$_id' },
+            fields: {
+              $map: {
+                input: { $ifNull: ['$list', []] },
+                as: 'f',
+                in: { id: '$$f.id', label: '$$f.label' },
+              },
+            },
+          },
+        },
+      ],
+      { label: 'mongo-tracker-forms' }
+    );
+    if (!forms.length) return { byNode: {}, elapsedMs: Date.now() - started };
+
+    const labelByFormField = new Map();
+    const formIds = [];
+    const nodeByForm = new Map();
+    for (const f of forms) {
+      formIds.push(f.formId);
+      nodeByForm.set(f.formId, f.nodeId);
+      for (const fld of f.fields || []) {
+        if (fld && fld.id) labelByFormField.set(f.formId + '::' + fld.id, fld.label);
+      }
+    }
+
+    /* ---- 2. the submitted values ----
+     * questionId joins to the LIST element id, NOT its _id: verified on the
+     * sandbox, where id matched all 2510 rows and _id matched none. */
+    const { rows: values } = await mongo.aggregate(
+      'FieldResult',
+      [
+        { $match: { formId: { $in: formIds }, isDeleted: { $ne: true } } },
+        { $project: { _id: 0, formId: 1, answerSetId: 1, questionId: 1, value: 1, createdAt: 1 } },
+      ],
+      { label: 'mongo-tracker-values' }
+    );
+
+    /* ---- 3. regroup fields into task rows ---- */
+    const KEY = {
+      'Task ID': 'taskId',
+      Task: 'task',
+      Milestone: 'milestone',
+      'Responsible Party': 'responsibleParty',
+      'Estimated Complete Date': 'estimatedCompleteDate',
+      'Partner Complete Date': 'partnerCompleteDate',
+      'Conditional Approved Date': 'conditionalApprovedDate',
+      'Final Complete Date': 'finalCompleteDate',
+      'Lumen Accept/Reject': 'lumenAcceptReject',
+      Notes: 'notes',
+    };
+
+    const bySet = new Map();
+    for (const v of values) {
+      if (v.value === null || v.value === undefined || v.value === '') continue;
+      const label = labelByFormField.get(v.formId + '::' + v.questionId);
+      const key = KEY[label];
+      if (!key) continue;
+      if (!bySet.has(v.answerSetId)) {
+        bySet.set(v.answerSetId, { answerSetId: v.answerSetId, formId: v.formId, updatedAt: null });
+      }
+      const row = bySet.get(v.answerSetId);
+      row[key] = String(v.value);
+      const at = v.createdAt ? new Date(v.createdAt).toISOString().slice(0, 10) : null;
+      if (at && (!row.updatedAt || at > row.updatedAt)) row.updatedAt = at;
+    }
+
+    const byNode = {};
+    for (const row of bySet.values()) {
+      const nodeId = nodeByForm.get(row.formId);
+      if (!nodeId || !nodeIds.includes(nodeId)) continue;
+
+      const header = isSectionHeader(row);
+      const verdict = trackerTaskStatus(row);
+
+      if (!byNode[nodeId]) byNode[nodeId] = [];
+      byNode[nodeId].push({
+        taskId: row.taskId || null,
+        task: row.task || null,
+        milestone: milestoneForTask(row),
+        /** True when the Milestone column was filled in rather than derived. */
+        milestoneExplicit: Boolean(row.milestone),
+        responsibleParty: row.responsibleParty || null,
+        estimatedCompleteDate: row.estimatedCompleteDate || null,
+        partnerCompleteDate: row.partnerCompleteDate || null,
+        conditionalApprovedDate: row.conditionalApprovedDate || null,
+        finalCompleteDate: row.finalCompleteDate || null,
+        lumenAcceptReject: row.lumenAcceptReject || null,
+        notes: row.notes || null,
+        status: verdict.status,
+        statusReason: verdict.reason,
+        /** Headings such as ">>> Drawings Completed" -- never counted. */
+        isSectionHeader: header,
+        answerSetId: row.answerSetId,
+      });
+    }
+
+    // Task ID order: group then index, numerically.
+    const orderKey = (t) => {
+      const parts = String(t.taskId || '').split('-');
+      return [Number(parts[0]) || 999, Number(parts[1]) || 999];
+    };
+    for (const list of Object.values(byNode)) {
+      list.sort((a, b) => {
+        const ka = orderKey(a);
+        const kb = orderKey(b);
+        return ka[0] - kb[0] || ka[1] - kb[1] || String(a.task).localeCompare(String(b.task));
+      });
+    }
+
+    return { byNode, elapsedMs: Date.now() - started };
+  });
+}
+
+/**
+ * Milestone rollup from tracker tasks.
+ *
+ * Section headings are excluded from numerator and denominator alike -- a heading
+ * is not work. A milestone with no tasks reports pct null ("--") rather than 0%,
+ * for the same reason as elsewhere: no data is not the same as no progress.
+ */
+function milestonesFromTracker(tasks) {
+  const real = (tasks || []).filter((t) => !t.isSectionHeader);
+  return TRACKER_MILESTONES.map((ms) => {
+    const mine = real.filter((t) => t.milestone === ms.key);
+    const done = mine.filter((t) => t.status === 'complete').length;
+    const total = mine.length;
+    return {
+      key: ms.key,
+      label: ms.label,
+      name: ms.name,
+      measurable: total > 0,
+      done,
+      total,
+      pct: total > 0 ? Math.round((done / total) * 100) : null,
+      inProgress: mine.filter((t) => t.status === 'inProgress').length,
+      rejected: mine.filter((t) => t.status === 'rejected').length,
+    };
+  });
+}
+
+/* ---------------------------------------------------------------------------
  * Shared building blocks for getNodeStages / getNodeChecklist
  * ------------------------------------------------------------------------- */
 
@@ -1202,6 +1398,8 @@ module.exports = {
   getNodeMetrics,
   getNodeStages,
   getNodeChecklist,
+  getNodeTracker,
+  milestonesFromTracker,
   getRouteMonitor,
   getSiteMonitor,
 };
