@@ -261,7 +261,13 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 title={
                   site.photoCount === null
                     ? undefined
-                    : `${site.photoCount} photos uploaded (exact) across ~${site.photosUploaded} of ${site.photosTotal} photo fields. Coverage is approximate; N/A fields are not excluded.`
+                    : `${site.photoCount} photos uploaded. ${site.photosUploaded} of ${site.photosTotal} photo fields complete` +
+                      (site.naFields
+                        ? ` (${site.naFields} of ${site.photoFieldsDefined} marked N/A and excluded).`
+                        : '.') +
+                      (site.photoPctApproximate
+                        ? ' Coverage is approximate for this node -- no per-field data.'
+                        : '')
                 }
               />
               <ReportsCell
