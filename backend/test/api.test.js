@@ -117,8 +117,10 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
   if (collection === 'S3Document') {
     /*
      * 4 uploaded documents and NO required-document placeholder, which is the real
-     * Telamon situation: 448 uploads across 84 nodes, 0 placeholders.
-     * With nothing declaring an expectation, UPLOADED % and MISSING must be null.
+     * Telamon situation: 301 untagged uploads across 56 nodes, 0 placeholders.
+     *
+     * UPLOADED % is therefore allowance usage (4/1000 = 0.4%), while MISSING stays
+     * null -- nothing declares which documents were expected.
      */
     return {
       rows: [{ _id: NODE_ID, uploaded: 4, required: 0, lastDocument: '2026-07-27T00:00:00.000Z' }],
@@ -366,7 +368,13 @@ test('documents come from S3Document; missing stays null with no required list',
    * uploaded". Both are inventions. Null renders as "--".
    */
   assert.equal(m.documentsRequired, 0);
-  assert.equal(m.documentsPct, null, 'UPLOADED % must be null, never 100%');
+
+  /*
+   * UPLOADED % is the portal's figure: files against the per-node allowance.
+   * The stub holds 4 uploads and the default limit is 1,000 -> 0.4%.
+   */
+  assert.equal(m.documentsLimit, 1000);
+  assert.equal(m.documentsPct, 0.4);
   assert.ok(executed.some((e) => e.collection === 'S3Document'));
 });
 
@@ -410,17 +418,25 @@ test('only untagged rows count as Node Documents', () => {
   assert.deepEqual(typeClause.$not.$in[1], ['folder', 'required_placeholder']);
 });
 
-test('documentPct only reports once something is declared required', () => {
-  const { documentPct } = require('../src/config/documents');
+test('UPLOADED % reproduces the portal, to one decimal place', () => {
+  const { documentUsagePct } = require('../src/config/documents');
 
-  // No expectation declared -> unknown, not complete.
-  assert.equal(documentPct({ uploaded: 4, required: 0 }), null);
-  assert.equal(documentPct({ uploaded: 0, required: 0 }), null);
+  /*
+   * The portal header for Knolls reads "FILES 5 / 1000  0.5%".
+   *
+   * One decimal is required, not cosmetic: rounding to whole percent shows 0% for
+   * every node under five files and reads as "nothing uploaded".
+   */
+  assert.equal(documentUsagePct({ uploaded: 5, limit: 1000 }), 0.5);
+  assert.equal(documentUsagePct({ uploaded: 9, limit: 1000 }), 0.9);
+  assert.equal(documentUsagePct({ uploaded: 0, limit: 1000 }), 0);
+  assert.equal(documentUsagePct({ uploaded: 1, limit: 1000 }), 0.1);
 
-  // Once placeholders exist the figure is real: uploaded / (uploaded + outstanding).
-  assert.equal(documentPct({ uploaded: 3, required: 1 }), 75);
-  assert.equal(documentPct({ uploaded: 0, required: 5 }), 0);
-  assert.equal(documentPct({ uploaded: 9, required: 1 }), 90);
+  // A pooled scope scales the allowance by node count -- 301 files over 202 nodes.
+  assert.equal(documentUsagePct({ uploaded: 301, limit: 202000 }), 0.1);
+
+  // No allowance means no figure, rather than a division by zero.
+  assert.equal(documentUsagePct({ uploaded: 5, limit: 0 }), null);
 });
 
 test('the portal Total Fields Count excludes N/A fields', async () => {

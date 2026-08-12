@@ -109,21 +109,35 @@ const IS_PLACEHOLDER_EXPR = {
 };
 
 /**
- * Upload percentage.
+ * UPLOADED % -- the portal's own figure: files against the per-node file allowance.
  *
- * Null when nothing declares an expectation -- with no denominator the honest
- * answer is "unknown", and 100% would be the most misleading possible reading of
- * "no required documents configured".
+ *     portal    FILES 5 / 1000    0.5%
+ *     ours      5 / 1000       -> 0.5%
+ *
+ * BE CLEAR ABOUT WHAT THIS MEASURES. It is allowance consumed, not work completed.
+ * 0.5% does not mean 0.5% of the required documents are in; it means the node is
+ * using 0.5% of the 1,000 files it may store. A node could be finished and still
+ * read 0.5%. The portal shows it beside a storage bar where that reading is obvious;
+ * on a completion dashboard the label carries more weight than it can bear.
+ *
+ * It is reported because it was asked for and it reproduces the portal exactly. The
+ * completion reading it invites is not available from this source -- see the note
+ * above on required-document templates.
+ *
+ * One decimal place, matching the portal: 5/1000 is 0.5%, and rounding to whole
+ * percent would show 0% and look like nothing had been uploaded.
  */
-function documentPct({ uploaded, required }) {
-  const expected = Number(uploaded || 0) + Number(required || 0);
-  if (!required || expected <= 0) return null;
-  return Math.min(100, Math.round((Number(uploaded || 0) / expected) * 100));
+function documentUsagePct({ uploaded, limit }) {
+  const cap = Number(limit || 0);
+  if (cap <= 0) return null;
+  const used = Number(uploaded || 0);
+  if (!Number.isFinite(used)) return null;
+  return Math.round((used / cap) * 1000) / 10;
 }
 
 module.exports = {
   REQUIRED_PLACEHOLDER_TYPE,
   NOT_A_DOCUMENT_EXPR,
   IS_PLACEHOLDER_EXPR,
-  documentPct,
+  documentUsagePct,
 };

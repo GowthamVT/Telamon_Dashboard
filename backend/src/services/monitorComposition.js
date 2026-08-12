@@ -12,7 +12,7 @@
  */
 const { MILESTONES } = require('../config/milestones');
 const { TRACKER_MILESTONES } = require('../config/tracker');
-const { documentPct } = require('../config/documents');
+const { documentUsagePct } = require('../config/documents');
 
 /**
  * Route Monitor payload.
@@ -292,7 +292,21 @@ function poolMetrics(byNode) {
      */
     documents: sum('documents'),
     documentsRequired: sum('documentsRequired'),
-    documentsPct: documentPct({ uploaded: sum('documents'), required: sum('documentsRequired') }),
+    /*
+     * The allowance SCALES with the scope: it is 1,000 files per node, so 19 nodes
+     * may hold 19,000. Pooling the numerator against a single node's cap would
+     * report 301/1000 = 30.1% for the whole estate, which is meaningless -- no such
+     * limit exists at that level.
+     *
+     * Recomputed from pooled totals rather than averaged, for the usual reason: a
+     * mean of per-node percentages weights a node holding 1 file the same as one
+     * holding 15.
+     */
+    documentsLimit: nodes.reduce((t, n) => t + (Number(n.documentsLimit) || 0), 0),
+    documentsPct: documentUsagePct({
+      uploaded: sum('documents'),
+      limit: nodes.reduce((t, n) => t + (Number(n.documentsLimit) || 0), 0),
+    }),
     lastDocument: lastDocuments.length ? lastDocuments[lastDocuments.length - 1] : null,
 
     reports: sum('reports'),

@@ -473,9 +473,25 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           color: '#F7F8FB',
         },
         {
+          /*
+           * The portal's own figure: files against the node's 1,000-file allowance,
+           * so Knolls' 5 files read 0.5% exactly as the portal shows.
+           *
+           * NOT coloured by pctColor. That ramp treats a low percentage as bad, which
+           * is right for completion and backwards here -- 0.5% of the allowance used
+           * is healthy, and painting it red would invent an alarm. Neutral until the
+           * cap is actually close.
+           */
           label: 'UPLOADED %',
           value: docPct === null ? '--' : `${docPct}%`,
-          color: docPct === null ? '#5A6478' : pctColor(docPct),
+          color:
+            docPct === null
+              ? '#5A6478'
+              : docPct >= 95
+                ? DANGER
+                : docPct >= 80
+                  ? '#F5B133'
+                  : '#F7F8FB',
         },
         {
           /*

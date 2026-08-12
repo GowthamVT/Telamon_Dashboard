@@ -92,6 +92,20 @@ const config = Object.freeze({
     pollSeconds: int('SYNC_POLL_SECONDS', 60),
   }),
 
+  documents: Object.freeze({
+    /**
+     * Files allowed per node -- the denominator behind the portal's "FILES 5 / 1000
+     * 0.5%".
+     *
+     * Configurable because it is NOT in the database. Company.subscriptionDetails is
+     * empty on all four Telamon companies, companyProperties holds only feature
+     * flags, and the Subscription collection turned out to be notification events
+     * rather than plans. So this is an ECSite application constant, read off the
+     * portal, and if the plan changes it must be changed here too.
+     */
+    fileLimitPerNode: int('DOCUMENT_FILE_LIMIT_PER_NODE', 1000),
+  }),
+
   http: Object.freeze({
     // Empty list => reflect any origin (dev convenience). See middleware/security.js.
     corsAllowedOrigins: list('CORS_ALLOWED_ORIGINS'),

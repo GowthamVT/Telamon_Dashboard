@@ -43,6 +43,8 @@
  */
 const mongo = require('../db/mongo');
 const cache = require('../cache/queryCache');
+/** For documents.fileLimitPerNode -- the portal's "/ 1000" is not in the database. */
+const config = require('../config/env');
 
 /**
  * Status and item-status rules live in config, not here: they are business rules
@@ -77,7 +79,7 @@ const {
 const {
   NOT_A_DOCUMENT_EXPR,
   IS_PLACEHOLDER_EXPR,
-  documentPct,
+  documentUsagePct,
 } = require('../config/documents');
 
 /** The tracker is the client's own milestone definition -- see config/tracker.js. */
@@ -936,9 +938,16 @@ async function getNodeMetrics(scope = {}) {
          * config/documents.js -- this is why documentPct is null.
          */
         documentsRequired: d ? Number(d.required) || 0 : 0,
-        documentsPct: documentPct({
+        /**
+         * The per-node file allowance -- the portal's "/ 1000".
+         *
+         * Sent with the figure so a client never has to know the constant, and so a
+         * pooled scope can scale it by node count without duplicating the rule.
+         */
+        documentsLimit: config.documents.fileLimitPerNode,
+        documentsPct: documentUsagePct({
           uploaded: d ? d.uploaded : 0,
-          required: d ? d.required : 0,
+          limit: config.documents.fileLimitPerNode,
         }),
         lastDocument: d && d.lastDocument ? new Date(d.lastDocument).toISOString().slice(0, 10) : null,
 
