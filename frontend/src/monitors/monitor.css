@@ -542,13 +542,6 @@
   min-width: 92px;
 }
 
-/* "NOT APPLICABLE (PHOTO FIELDS)" needs room to sit on two lines without pushing
-   its neighbours out of alignment. */
-.mon-media-item--wide {
-  min-width: 132px;
-  max-width: 150px;
-}
-
 .mon-media-num {
   font-size: 17px;
   font-weight: 700;

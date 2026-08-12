@@ -29,7 +29,7 @@ const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 const EMPTY_TRACK = '#2A3142';
 
 /** Filter pills use the same words as the STATUS column. */
-const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'N/A'];
+const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'Not Started'];
 
 
 /** m1 < m2 < m3 < m4 < m5 < unmapped, so unmapped tasks read as an appendix. */
@@ -48,16 +48,16 @@ const ITEM_STATUS_PRESENTATION = {
   complete: { color: '#34E0A1', label: 'Complete', Icon: CircleCheck },
   inProgress: { color: '#F5B133', label: 'In Progress', Icon: Circle },
   /*
-   * Shown as "N/A", by request.
+   * "Not Started", not "N/A".
    *
-   * The underlying tracker state is "no date and no acceptance recorded", which
-   * this dashboard used to word as "Not Started". The key stays `notStarted`
-   * because that is what the tracker means; only the label changed.
+   * N/A now has one confirmed meaning on this screen -- the portal's Not Applicable,
+   * 69 photo fields on Knolls -- and it is a different quantity from a tracker task
+   * with no recorded date. Two figures under one word contradict each other.
    */
-  notStarted: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
+  notStarted: { color: '#5A6478', label: 'Not Started', Icon: Circle },
   rejected: { color: '#F0576E', label: 'Rejected', Icon: CircleMinus },
   // Retained so a stale payload cannot blank the column.
-  missing: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
+  missing: { color: '#5A6478', label: 'Not Started', Icon: Circle },
   na: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
 };
 
@@ -256,7 +256,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const visibleItems = useMemo(() => {
     if (!checklist) return null;
     const q = query.trim().toLowerCase();
-    const WANTED = { Complete: 'complete', 'In Progress': 'inProgress', 'N/A': 'notStarted' };
+    const WANTED = { Complete: 'complete', 'In Progress': 'inProgress', 'Not Started': 'notStarted' };
 
     let out = checklist.filter((it) => {
       const text = `${it.task || ''} ${it.taskId || ''}`.toLowerCase();
@@ -396,47 +396,16 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       { label: 'Ignored', value: n(liveMs.ignoredMedia) },
       { label: 'Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
       { label: 'Media', value: n(liveMs.photos) },
-      /*
-       * "(photo fields)" is load-bearing, not decoration.
-       *
-       * The tracker task cards also carry an N/A, and the two are different
-       * quantities -- 69 photo fields marked N/A here, 0 tracker tasks without a
-       * recorded date there. Two bare "N/A"s showing different numbers on one screen
-       * reads as a contradiction, so this one names what it counts.
-       */
-      { label: 'Not applicable (photo fields)', value: n(liveMs.naFields), color: '#9098A9', wide: true },
+      { label: 'Not applicable', value: n(liveMs.naFields), color: '#9098A9' },
       { label: 'Fields w/o media', value: n(liveMs.incompleteFields) },
     ];
   }, [liveMs]);
 
-  /**
-   * The N/A card's count, taken from the SAME tracker rows the table renders so the
-   * card cannot contradict the list beneath it.
-   *
-   * The other four cards read documents and milestones, which are different
-   * datasets; this one is the tracker's own tally.
-   *
-   * Pooled scope counts node-by-task pairs, not distinct tasks. Counting distinct
-   * tasks by their MAJORITY status once made All and a single route report the same
-   * figures, because both had the same task list -- a rollup that does not grow with
-   * its scope is not a rollup. Summing per-node counts restores All >= route >= node.
+  /*
+   * All five cards read the payload's own figures -- four from the portal's Node
+   * Media block, one from the tracker rollup. Nothing is recounted from the table
+   * rows here, so there is no second implementation to drift.
    */
-  const docStats = useMemo(() => {
-    if (!checklist) return null;
-    const pooled = checklist.some((i) => i.aggregated && i.nodeCount > 1);
-
-    const total = pooled
-      ? checklist.reduce((t, i) => t + (i.nodeCount || 0), 0)
-      : checklist.length;
-    const complete = pooled
-      ? checklist.reduce((t, i) => t + (i.completeCount || 0), 0)
-      : checklist.filter((i) => i.status === 'complete').length;
-    const inProgress = pooled
-      ? checklist.reduce((t, i) => t + (i.inProgressCount || 0), 0)
-      : checklist.filter((i) => i.status === 'inProgress').length;
-
-    return { notStarted: total - complete - inProgress };
-  }, [checklist]);
 
   /*
    * The first three cards describe DOCUMENTS, from S3Document -- not the tracker
@@ -463,9 +432,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   };
   const docTotal = docNum('documents');
   const docPct = docNum('documentsPct');
-  const docMissing = docNum('documentsRequired');
+  /** The portal's "Total Fields without Media" and "Not Applicable". */
+  const docMissing = docNum('incompleteFields');
+  const docNa = docNum('naFields');
 
-  const cards = docStats
+  const cards = live
     ? [
         {
           label: 'TOTAL DOCUMENTS',
@@ -495,21 +466,30 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         },
         {
           /*
-           * 0 outstanding placeholders shows "--", not 0.
+           * The portal's "Total Fields without Media" -- 59 on Knolls.
            *
-           * With no required-document template configured, 0 is indistinguishable
-           * from "everything has been uploaded" -- and reading it as the latter would
-           * be wrong on every Telamon node. Once a template exists the figure is
-           * real and shows as a number.
+           * NOT the outstanding required-document count, which has no source: no
+           * required-document template is configured for Telamon, so that figure was
+           * permanently "--". This is a real number the portal publishes, and it
+           * answers the same question a reader asks of a MISSING card.
+           *
+           * N/A fields are already excluded from it upstream, so MISSING and N/A never
+           * count the same field twice.
            */
           label: 'MISSING',
-          value: !docMissing ? '--' : docMissing,
-          color: !docMissing ? '#5A6478' : DANGER,
+          value: docMissing === null ? '--' : docMissing,
+          color: docMissing ? DANGER : statusColor(STATUS.COMPLETE),
         },
         {
+          /*
+           * The portal's "Not Applicable" -- 69 on Knolls. Photo fields the app marks
+           * N/A, which is the only N/A the source actually records.
+           *
+           * Grey, not red: not-applicable is a neutral state and must not read as an
+           * alarm.
+           */
           label: 'N/A',
-          value: docStats.notStarted,
-          // Grey, not red: N/A is a neutral state, so it must not read as an alarm.
+          value: docNa === null ? '--' : docNa,
           color: '#9098A9',
         },
         {
@@ -750,10 +730,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         {mediaFigures ? (
           <div className="mon-media">
             {mediaFigures.map((f) => (
-              <div
-                className={f.wide ? 'mon-media-item mon-media-item--wide' : 'mon-media-item'}
-                key={f.label}
-              >
+              <div className="mon-media-item" key={f.label}>
                 <p className="mon-media-num" style={f.color ? { color: f.color } : undefined}>
                   {f.value}
                 </p>
@@ -842,7 +819,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             {visibleItems.length} of {checklist.length} tracker tasks shown ·{' '}
             {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
             {checklist.filter((i) => i.status === 'inProgress').length} In Progress,{' '}
-            {checklist.filter((i) => i.status === 'notStarted').length} N/A
+            {checklist.filter((i) => i.status === 'notStarted').length} Not Started
           </>
         ) : (
           <>
