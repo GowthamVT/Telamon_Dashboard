@@ -370,6 +370,26 @@ test('documents come from S3Document; missing stays null with no required list',
   assert.ok(executed.some((e) => e.collection === 'S3Document'));
 });
 
+test('document fields are always sent, as a number or null -- never absent', async () => {
+  /*
+   * The card layer renders `${value}%`. When a field was absent the value was
+   * undefined rather than null, a `!== null` guard let it through, and the screen
+   * read "undefined%". The UI now treats both alike, and this asserts the server
+   * side of that contract: the fields exist on every scope.
+   */
+  for (const url of ['/api/monitor/site', `/api/monitor/site?nodeId=${NODE_ID}`]) {
+    const { body } = await request(url);
+    for (const f of ['documents', 'documentsRequired', 'documentsPct']) {
+      assert.ok(f in body.metrics, `${url} must send ${f}`);
+      const v = body.metrics[f];
+      assert.ok(
+        v === null || typeof v === 'number',
+        `${url}: ${f} must be a number or null, got ${typeof v} ${v}`
+      );
+    }
+  }
+});
+
 test('documentPct only reports once something is declared required', () => {
   const { documentPct } = require('../src/config/documents');
 

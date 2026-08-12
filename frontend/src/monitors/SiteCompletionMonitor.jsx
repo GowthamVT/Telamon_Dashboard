@@ -448,23 +448,47 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
    * but no template is configured for Telamon, so there is no denominator. Both
    * figures start reporting the moment one is set up -- see config/documents.js.
    */
+  /*
+   * Read every document figure through `docNum`, which treats undefined and null
+   * alike.
+   *
+   * A server older than this page sends no `documents` field at all, so the value is
+   * UNDEFINED rather than null. A `!== null` check passed on undefined and put
+   * "undefined%" on screen. Any absent-or-unknown figure must degrade to "--", and
+   * the two cases have to be handled by one expression so they cannot drift apart.
+   */
+  const docNum = (field) => {
+    const v = liveMs ? liveMs[field] : null;
+    return v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v);
+  };
+  const docTotal = docNum('documents');
+  const docPct = docNum('documentsPct');
+  const docMissing = docNum('documentsRequired');
+
   const cards = docStats
     ? [
         {
           label: 'TOTAL DOCUMENTS',
-          value: liveMs ? liveMs.documents : '--',
+          value: docTotal === null ? '--' : docTotal,
           color: '#F7F8FB',
         },
         {
           label: 'UPLOADED %',
-          value: liveMs && liveMs.documentsPct !== null ? `${liveMs.documentsPct}%` : '--',
-          color:
-            liveMs && liveMs.documentsPct !== null ? pctColor(liveMs.documentsPct) : '#5A6478',
+          value: docPct === null ? '--' : `${docPct}%`,
+          color: docPct === null ? '#5A6478' : pctColor(docPct),
         },
         {
+          /*
+           * 0 outstanding placeholders shows "--", not 0.
+           *
+           * With no required-document template configured, 0 is indistinguishable
+           * from "everything has been uploaded" -- and reading it as the latter would
+           * be wrong on every Telamon node. Once a template exists the figure is
+           * real and shows as a number.
+           */
           label: 'MISSING',
-          value: liveMs && liveMs.documentsRequired > 0 ? liveMs.documentsRequired : '--',
-          color: liveMs && liveMs.documentsRequired > 0 ? DANGER : '#5A6478',
+          value: !docMissing ? '--' : docMissing,
+          color: !docMissing ? '#5A6478' : DANGER,
         },
         {
           label: 'N/A',
