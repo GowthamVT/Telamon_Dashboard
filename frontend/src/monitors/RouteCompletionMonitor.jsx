@@ -158,7 +158,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
              * per-node PHOTOS column and its tooltip still carry the numbers for
              * anyone who needs to audit the percentage.
              */
-            caption={totals.photoDefined ? 'MEDIA APPROVED' : 'ROUTE AVG. PHOTO COMPLETION'}
+            caption="ROUTE AVG. PHOTO COMPLETION"
           />
           <div className="mon-hero-right">
             <CountBreakdown
@@ -194,7 +194,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           // so it tracks the selection (198 all Telamon -> 16 one route -> 1 node).
           { label: 'TOTAL SITES', value: kpiTotal, color: '#F7F8FB' },
           {
-            label: 'MEDIA APPROVED %',
+            label: 'PHOTOS UPLOADED %',
             value: totals.photoPct === null ? '--' : `${totals.photoPct}%`,
             color: totals.photoPct === null ? '#5A6478' : pctColor(totals.photoPct),
           },
