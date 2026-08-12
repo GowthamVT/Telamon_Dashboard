@@ -117,10 +117,10 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
   if (collection === 'S3Document') {
     /*
      * 4 uploaded documents and NO required-document placeholder, which is the real
-     * Telamon situation: 301 untagged uploads across 56 nodes, 0 placeholders.
+     * Telamon situation: 220 node-level uploads across 51 nodes, 0 placeholders.
      *
-     * UPLOADED % is therefore allowance usage (4/1000 = 0.4%), while MISSING stays
-     * null -- nothing declares which documents were expected.
+     * UPLOADED % is therefore allowance usage (4/1000 = 0.4%). MISSING reads the
+     * portal's "Total Fields without Media" instead, which comes from ProgressStats.
      */
     return {
       rows: [{ _id: NODE_ID, uploaded: 4, required: 0, lastDocument: '2026-07-27T00:00:00.000Z' }],
@@ -398,21 +398,30 @@ test('document fields are always sent, as a number or null -- never absent', asy
   }
 });
 
-test('only untagged rows count as Node Documents', () => {
+test('a Node Document is untagged AND node-level', () => {
   /*
-   * The portal's Node Documents page lists rows with NO tag. A tagged row belongs to
-   * another view -- SITE_SUMMARY_JSONS to nothing user-facing, COP to the close-out
-   * package area. Matching only the JSON folder let Knolls' two COP files through
-   * and reported 7 against the portal's 5 files / 1.60 MB.
-   *
-   * Exercised against the expression directly, because the aggregation is stubbed.
+   * Two conditions, each learned from a node where the dashboard disagreed with the
+   * portal. Exercised against the expression directly, because the aggregation is
+   * stubbed out in these tests.
    */
   const { NOT_A_DOCUMENT_EXPR } = require('../src/config/documents');
-  const [tagClause, typeClause] = NOT_A_DOCUMENT_EXPR.$and;
+  const [tagClause, levelClause, typeClause] = NOT_A_DOCUMENT_EXPR.$and;
 
-  // The tag test must accept a missing key, an explicit null and an empty string,
-  // and reject any named folder.
+  /*
+   * NO TAG. A tagged row belongs to another view -- SITE_SUMMARY_JSONS to nothing
+   * user-facing, COP to the close-out package area. Matching only the JSON folder let
+   * Knolls' two COP files through and reported 7 against the portal's 5 files /
+   * 1.60 MB. Must accept a missing key, an explicit null and an empty string.
+   */
   assert.deepEqual(tagClause, { $in: [{ $ifNull: ['$tag', null] }, [null, '']] });
+
+  /*
+   * documentLevel EXACTLY 'node'. Rows without one are form-field attachments: they
+   * carry answerSetId, formId and questionId, and the portal shows them under the
+   * form. GBII > Bowling Green holds two and its Documents page reads 0. 'site' is
+   * excluded for the same reason -- a site document is not a node document.
+   */
+  assert.deepEqual(levelClause, { $eq: ['$documentLevel', 'node'] });
 
   // Folders and placeholders are not files.
   assert.deepEqual(typeClause.$not.$in[1], ['folder', 'required_placeholder']);
@@ -432,8 +441,8 @@ test('UPLOADED % reproduces the portal, to one decimal place', () => {
   assert.equal(documentUsagePct({ uploaded: 0, limit: 1000 }), 0);
   assert.equal(documentUsagePct({ uploaded: 1, limit: 1000 }), 0.1);
 
-  // A pooled scope scales the allowance by node count -- 301 files over 202 nodes.
-  assert.equal(documentUsagePct({ uploaded: 301, limit: 202000 }), 0.1);
+  // A pooled scope scales the allowance by node count -- 220 files over 202 nodes.
+  assert.equal(documentUsagePct({ uploaded: 220, limit: 202000 }), 0.1);
 
   // No allowance means no figure, rather than a division by zero.
   assert.equal(documentUsagePct({ uploaded: 5, limit: 0 }), null);

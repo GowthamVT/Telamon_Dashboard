@@ -28,18 +28,17 @@
  * Documents, so counting them here double-counts a different screen's contents.
  * Excluding only the JSON folder was not enough.
  *
- * Also excluded: typeOfDocument 'folder' (a folder is not a file),
- * 'required_placeholder' (an expectation, not an upload -- see below), and
- * isDeleted rows.
+ * Also excluded: form-field attachments (see documentLevel below), typeOfDocument
+ * 'folder' (a folder is not a file), 'required_placeholder' (an expectation, not an
+ * upload -- see below), and isDeleted rows.
  *
- * That leaves 301 documents estate-wide, down from the 448 the JSON-only rule gave.
- * Per node: Knolls 5, Basile 6, Wadley 9.
+ * That leaves 220 documents estate-wide across 51 of 202 nodes, narrowed twice:
+ * 448 with the JSON-only rule, 301 once tagged rows went, 220 once form attachments
+ * did. Per node: Knolls 5, Basile 4, Wadley 6, GBII > Bowling Green 0.
  *
- * KEPT DELIBERATELY: rows whose typeOfDocument is a mangled mime string
- * ("pdf;base64,JVBERi0xL", "vnd.openxmlformats-...;base64,UEsDBBQAB"). The category
- * field was corrupted on write, but these are genuine untagged uploads by named
- * people and the portal lists them -- three of Basile's six and three of Wadley's
- * nine are in this state.
+ * VERIFIED against the portal on two nodes, each of which caught a different bug:
+ *   Knolls              FILES 5 / 1000, SIZE 1.60 MB   -> 5 files, 1.60 MB
+ *   GBII > Bowling Green 0 documents                   -> 0
  * ---------------------------------------------------------------------------
  *
  * ---------------------------------------------------------------------------
@@ -59,15 +58,18 @@
  * told apart from photo fields either, and ProgressStats covers only photolist
  * stage forms.
  *
- * So MISSING and UPLOADED % report null -- rendered "--" -- rather than a number
- * derived from a rule we invented. The alternative considered and rejected was to
- * treat the observed type catalogue (COP_Docs, CD, Electrical_Permit, Fiber
- * Results, RFDS, Other_Docs) as the expected set, which would have been our rule
- * and not the client's. That mistake has already been made once on this dashboard
- * with the M1-M4 stage mapping.
+ * `documentsRequired` is therefore 0 everywhere, and no card reports it. The
+ * alternative considered and rejected was to treat the observed type catalogue
+ * (COP_Docs, CD, Electrical_Permit, Fiber Results, RFDS, Other_Docs) as the expected
+ * set, which would have been our rule and not the client's -- the same mistake as
+ * the retired M1-M4 stage mapping.
  *
- * The code below computes both figures properly the moment placeholders appear, so
- * configuring required documents in the portal is all that is needed.
+ * The two cards that once waited on this now read figures the portal publishes:
+ *   UPLOADED %   files against the per-node allowance   (see documentUsagePct)
+ *   MISSING      "Total Fields without Media"           (metrics.incompleteFields)
+ *
+ * The count is still collected, so a required-document template configured in the
+ * portal starts reporting immediately rather than needing new queries.
  * ---------------------------------------------------------------------------
  */
 
@@ -84,16 +86,33 @@ const REQUIRED_PLACEHOLDER_TYPE = 'required_placeholder';
 /**
  * True when the row is a document the portal lists under Node Documents.
  *
- * The test is "has no tag", not "is not in the JSON folder". Filed rows belong to
- * another screen -- SITE_SUMMARY_JSONS to nothing user-facing, COP to the close-out
- * package area -- and matching only the JSON folder let Knolls' two COP files
- * through, reporting 7 where the portal says 5.
+ * TWO conditions, each learned from a node where the dashboard disagreed with the
+ * portal:
  *
- * Covers a missing key, an explicit null and an empty string; all three occur.
+ * 1. NO TAG. `tag` is the S3 folder a row was filed under, and a filed row belongs
+ *    to another screen -- SITE_SUMMARY_JSONS to nothing user-facing, COP to the
+ *    close-out package area. Matching only the JSON folder let Knolls' two COP files
+ *    through and reported 7 where the portal says 5.
+ *
+ * 2. documentLevel === 'node'. Rows with no documentLevel are FORM-FIELD
+ *    ATTACHMENTS -- a file uploaded against a question inside a form, carrying
+ *    answerSetId, formId and questionId. The portal shows those under the form, not
+ *    under Node Documents, which is why GBII > Bowling Green reads 0 documents while
+ *    holding two such files ("Bowling Green - Permit V2.pdf", "5874 ATS WELDING ILA
+ *    HUT BG CTR 2.pdf", both by chelsea.mclaughlin@telamon.com).
+ *
+ * The split is exact across every untagged Telamon row -- 220 with
+ * documentLevel 'node' and no answer linkage, 81 with an answerSetId and no
+ * documentLevel, and nothing in between. `documentLevel: 'site'` also exists and is
+ * excluded for the same reason: a site document is not a node document.
+ *
+ * The tag test covers a missing key, an explicit null and an empty string; all
+ * three occur in the data.
  */
 const NOT_A_DOCUMENT_EXPR = {
   $and: [
     { $in: [{ $ifNull: ['$tag', null] }, [null, '']] },
+    { $eq: ['$documentLevel', 'node'] },
     { $not: { $in: [{ $ifNull: ['$typeOfDocument', ''] }, ['folder', REQUIRED_PLACEHOLDER_TYPE]] } },
   ],
 };
