@@ -315,21 +315,33 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       };
     }
     if (!liveMs) return { pct: 0, color: '#5A6478', label: '--', note: null };
-    const pct = liveMs.photoPct ?? 0;
+
     /*
-     * The denominator must be the SAME one the percentage used. It excludes N/A
-     * fields, so showing fieldsCovered/photoFields here while the percentage is
-     * fieldsCovered/(photoFields - naFields) would put two contradictory figures
-     * on one line -- Wadley would read "117/166 - 80%" when 117/166 is 70%.
+     * APPROVED MEDIA / TOTAL MEDIA -- the portal's pair, and the same percentage the
+     * Route Monitor's PHOTOS column shows. Upton: 12/35 = 34%.
+     *
+     * The numerator and denominator here must be the two the percentage was computed
+     * from, or the line contradicts itself: showing "13/159 - 34%" would be worse
+     * than either figure alone.
      */
-    const denominator = liveMs.coverageDenominator ?? liveMs.photoFields;
+    const approved = liveMs.approvedMedia;
+    const media = liveMs.photos;
+    if (media === null || media === undefined || approved === null || approved === undefined) {
+      return { pct: 0, color: '#5A6478', label: '--', note: null };
+    }
+    const pct = liveMs.mediaApprovedPct ?? 0;
     return {
       pct,
       color: pctColor(pct),
-      label: `${liveMs.fieldsCovered}/${denominator} · ${pct}%`,
-      // Sub-label removed by request. The label beside the bar already carries
-      // covered/applicable and the percentage.
-      note: null,
+      label: `${approved}/${media} · ${pct}%`,
+      /*
+       * Field coverage is a different question and is no longer the headline, so it
+       * sits underneath rather than disappearing.
+       */
+      note:
+        liveMs.coveragePct === null || liveMs.coveragePct === undefined
+          ? null
+          : `${liveMs.fieldsCovered} of ${liveMs.coverageDenominator ?? liveMs.photoFields} photo fields have media (${liveMs.coveragePct}%)`,
     };
   }, [live, liveMs, data.photos, overallStatus]);
 
@@ -682,7 +694,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <div className="mon-pr">
           <div className="mon-pr-main">
             <div className="mon-pr-head">
-              <span className="mon-pr-caption">Photo fields covered</span>
+              <span className="mon-pr-caption">Media approved</span>
               <span className="mon-pr-value" style={{ color: photoBar.color }}>
                 {photoBar.label}
               </span>

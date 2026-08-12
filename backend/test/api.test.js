@@ -105,7 +105,16 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
   if (collection === 'FieldMedia') {
     const byForm = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.formId);
     if (byForm) return { rows: [{ _id: { nodeId: NODE_ID, formId: 'form-1' }, photos: 4, fieldsCovered: 3, lastPhoto: '2026-08-01' }], rowCount: 1, elapsedMs: 1 };
-    return { rows: [{ _id: NODE_ID, photosAll: 4, fieldsCovered: 3, photos: 4 }], rowCount: 1, elapsedMs: 1 };
+    /*
+     * 4 media, 1 approved -> the headline PHOTOS figure is 1/4 = 25%, while field
+     * coverage stays 3 of 7 = 43%. Deliberately different numbers, so a test cannot
+     * pass by confusing the two.
+     */
+    return {
+      rows: [{ _id: NODE_ID, photosAll: 4, fieldsCovered: 3, photos: 4, approvedMedia: 1, rejectedMedia: 0, ignoredMedia: 0 }],
+      rowCount: 1,
+      elapsedMs: 1,
+    };
   }
 
   if (collection === 'FormBuilderAnswers') {
@@ -345,7 +354,7 @@ test('coverage excludes BOTH N/A and Not Required from the denominator', async (
   assert.equal(m.naFields, 2);
   assert.equal(m.notRequiredFields, 1);
   assert.equal(m.coverageDenominator, 7, 'both N/A and Not Required must be excluded');
-  assert.equal(m.photoPct, 43);
+  assert.equal(m.coveragePct, 43);
   assert.equal(m.photoPctApproximate, false);
   // incompleteFields is the portal's "Total Fields without Media".
   assert.equal(m.incompleteFields, 4);
@@ -446,6 +455,53 @@ test('UPLOADED % reproduces the portal, to one decimal place', () => {
 
   // No allowance means no figure, rather than a division by zero.
   assert.equal(documentUsagePct({ uploaded: 5, limit: 0 }), null);
+});
+
+test('PHOTOS is approved media over total media, not field coverage', async () => {
+  /*
+   * Upton is the case: its Node Media header reads "Total Approved Media 12" and
+   * "Total Media Count 35", and the portal's figure is 12/35 = 34%. The dashboard
+   * used to show field coverage there -- 13/159 = 8% -- which is a different
+   * question and a very different number.
+   *
+   * Field coverage is still reported as coveragePct, for the tooltip.
+   */
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  const m = body.metrics;
+
+  assert.equal(m.approvedMedia, 1);
+  assert.equal(m.photos, 4);
+  assert.equal(m.mediaApprovedPct, 25, 'headline = approved / total media');
+  assert.equal(m.coveragePct, 43, 'field coverage survives, separately');
+});
+
+test('media approval is null, not 0, when a node has no media', async () => {
+  /*
+   * Nothing submitted is not the same as nothing approved. 88% of Telamon nodes that
+   * have photos have zero approved media, so this distinction decides whether the
+   * dashboard reads "--" or a red 0% across most of the estate.
+   */
+  const { documentUsagePct } = require('../src/config/documents');
+  assert.equal(typeof documentUsagePct, 'function');
+
+  const original = mongo.aggregate;
+  try {
+    mongo.aggregate = async (collection, pipeline, opts = {}) => {
+      if (collection === 'FieldMedia') {
+        const byForm = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.formId);
+        if (byForm) return { rows: [], rowCount: 0, elapsedMs: 1 };
+        return { rows: [], rowCount: 0, elapsedMs: 1 };
+      }
+      return original(collection, pipeline, opts);
+    };
+    cache.invalidateAll('test');
+    const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+    assert.equal(body.metrics.photos, 0);
+    assert.equal(body.metrics.mediaApprovedPct, null, 'no media -> "--", never 0%');
+  } finally {
+    mongo.aggregate = original;
+    cache.invalidateAll('test');
+  }
 });
 
 test('the portal Total Fields Count excludes N/A fields', async () => {

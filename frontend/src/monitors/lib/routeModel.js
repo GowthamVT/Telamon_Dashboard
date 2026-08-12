@@ -132,24 +132,28 @@ export function rowsFromNodes(nodes = []) {
       stagePhotos: m ? m.stagePhotos : null,
 
       /**
-       * PHOTOS column = photo fields covered / photo fields that APPLY.
+       * PHOTOS column = APPROVED MEDIA / TOTAL MEDIA, matching the portal's pair.
        *
-       * Not photos/fields: a field takes many photos, so that ratio can exceed
-       * 100% (554 photos across 154 fields = 360%).
+       * Upton reads 12/35 = 34%, exactly its Node Media header ("Total Approved
+       * Media 12", "Total Media Count 35").
        *
-       * The denominator is coverageDenominator, which excludes fields the app
-       * marks N/A -- the same denominator the Site Monitor uses. Dividing by the
-       * raw photoFields instead understates coverage badly wherever N/A is
-       * common: LUMEN_ILA_SALT_LAKE_CITY_SACRAMENTO has 539 N/A fields of 2668,
-       * so it read 328/2668 = 12% where the truth is 328/2130 = 15%. Falls back
-       * to photoFields for any node with no ProgressStats documents.
+       * This replaced field coverage (13/159 there) by request. Coverage answers a
+       * different question -- how much of the photolist has anything against it --
+       * and is still carried below for the tooltip rather than discarded.
+       *
+       * Neither is photos/fields: a field takes many photos, so that ratio can
+       * exceed 100% (554 photos across 154 fields = 360%).
        */
-      photosUploaded: m ? m.fieldsCovered : null,
-      photosTotal: m ? (m.coverageDenominator ?? m.photoFields) : null,
-      /** Kept so the tooltip can show what was excluded and why. */
+      photosUploaded: m ? m.approvedMedia : null,
+      photosTotal: m ? m.photos : null,
+      photosPct: m ? m.mediaApprovedPct : null,
+
+      /** Field coverage, kept for the tooltip: covered / applicable, and what was excluded. */
+      coverageCovered: m ? m.fieldsCovered : null,
+      coverageTotal: m ? (m.coverageDenominator ?? m.photoFields) : null,
+      coveragePct: m ? m.coveragePct : null,
       photoFieldsDefined: m ? m.photoFields : null,
       naFields: m ? m.naFields || 0 : null,
-      photosPct: m ? m.photoPct : null,
       photoCount: m ? m.photos : null,
       photoPctApproximate: m ? m.photoPctApproximate === true : false,
 

@@ -113,9 +113,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     }
     const withReports = rows.filter((r) => r.reports !== null && r.reports !== undefined);
     const withMissed = rows.filter((r) => r.missedDays !== null && r.missedDays !== undefined);
-    // Photo % is pooled (total covered / total defined), not a mean of per-node
-    // percentages: averaging percentages would weight a 1-field node the same as
-    // a 165-field one.
+    // Pooled (total approved / total media), not a mean of per-node percentages:
+    // averaging would weight a node with 3 media the same as one with 700.
     const covered = rows.reduce((sum, r) => sum + (r.photosUploaded || 0), 0);
     const defined = rows.reduce((sum, r) => sum + (r.photosTotal || 0), 0);
 
@@ -159,7 +158,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
              * per-node PHOTOS column and its tooltip still carry the numbers for
              * anyone who needs to audit the percentage.
              */
-            caption={totals.photoDefined ? 'PHOTO FIELDS COVERED' : 'ROUTE AVG. PHOTO COMPLETION'}
+            caption={totals.photoDefined ? 'MEDIA APPROVED' : 'ROUTE AVG. PHOTO COMPLETION'}
           />
           <div className="mon-hero-right">
             <CountBreakdown
@@ -195,7 +194,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           // so it tracks the selection (198 all Telamon -> 16 one route -> 1 node).
           { label: 'TOTAL SITES', value: kpiTotal, color: '#F7F8FB' },
           {
-            label: 'PHOTOS UPLOADED %',
+            label: 'MEDIA APPROVED %',
             value: totals.photoPct === null ? '--' : `${totals.photoPct}%`,
             color: totals.photoPct === null ? '#5A6478' : pctColor(totals.photoPct),
           },
@@ -263,12 +262,13 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 title={
                   site.photoCount === null
                     ? undefined
-                    : `${site.photoCount} photos uploaded. ${site.photosUploaded} of ${site.photosTotal} photo fields complete` +
+                    : `${site.photosUploaded} of ${site.photosTotal} media approved. ` +
+                      `Separately, ${site.coverageCovered} of ${site.coverageTotal} photo fields have media` +
                       (site.naFields
                         ? ` (${site.naFields} of ${site.photoFieldsDefined} marked N/A and excluded).`
                         : '.') +
                       (site.photoPctApproximate
-                        ? ' Coverage is approximate for this node -- no per-field data.'
+                        ? ' Field coverage is approximate for this node -- no per-field data.'
                         : '')
                 }
               />

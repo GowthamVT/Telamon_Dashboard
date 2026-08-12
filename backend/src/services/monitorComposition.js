@@ -328,7 +328,17 @@ function poolMetrics(byNode) {
     notRequiredFields: sum('notRequiredFields'),
     incompleteFields: sum('incompleteFields'),
     coverageDenominator: denominator,
-    photoPct: denominator > 0 ? Math.min(100, Math.round((fieldsCovered / denominator) * 100)) : null,
+    coveragePct:
+      denominator > 0 ? Math.min(100, Math.round((fieldsCovered / denominator) * 100)) : null,
+    /*
+     * Pooled from the TOTALS, not averaged: a node with 3 media weighs 3, not the
+     * same as one with 700. Null when the scope holds no media at all, so "nothing
+     * submitted" never renders as "nothing approved".
+     */
+    mediaApprovedPct:
+      sum('photos') > 0
+        ? Math.min(100, Math.round((sum('approvedMedia') / sum('photos')) * 100))
+        : null,
     photoPctApproximate: nodes.some((n) => n.photoPctApproximate),
   };
 }

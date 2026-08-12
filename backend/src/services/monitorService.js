@@ -987,9 +987,28 @@ async function getNodeMetrics(scope = {}) {
         /** The portal's "Total Fields without Media" -- In-Complete, N/A excluded. */
         incompleteFields,
         coverageDenominator,
-        photoPct:
+        /**
+         * FIELD COVERAGE: photo fields that have media, over applicable fields.
+         *
+         * No longer the headline figure -- see mediaApprovedPct -- but kept, because
+         * it answers a different and useful question and the tooltip shows it.
+         */
+        coveragePct:
           coverageDenominator > 0
             ? Math.min(100, Math.round((fieldsCovered / coverageDenominator) * 100))
+            : null,
+        /**
+         * MEDIA APPROVED: approved media over total media. The portal's own pair.
+         *
+         * Upton reproduces exactly: 12 approved of 35 media = 34%.
+         *
+         * Null rather than 0 when a node has no media at all -- nothing has been
+         * submitted, so there is nothing to approve, which is not the same as a
+         * reviewer having rejected everything.
+         */
+        mediaApprovedPct:
+          pm && Number(pm.photos) > 0
+            ? Math.min(100, Math.round((Number(pm.approvedMedia || 0) / Number(pm.photos)) * 100))
             : null,
         photoPctApproximate: !exactCoverage,
       };
