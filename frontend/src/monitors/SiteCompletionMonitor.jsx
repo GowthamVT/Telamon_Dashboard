@@ -598,8 +598,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                   : `${milestoneView.overallPct}%`
                 : `${summary.overallPct}%`}
             </p>
-            {/* Caption removed by request. The card heading MILESTONE PROGRESS
-                already names what the figure measures. */}
+            {/* Names what the big figure is: completion across M1..M5, not the count
+                of milestones or of tasks, both of which also appear on this card. */}
+            <p className="mon-hero-caption">MILESTONE COMPLETION</p>
           </div>
 
           <div className="mon-hero-right">
@@ -616,11 +617,15 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                   color: statusColor(STATUS.IN_PROGRESS),
                 },
                 {
-                  label: 'N/A',
+                  /*
+                   * "Not Started", NOT "N/A" -- these three count MILESTONES, while the
+                   * N/A on the stat cards and in the STATUS column counts tracker TASKS.
+                   * A milestone with no completed task has genuinely not started; it is
+                   * not inapplicable, so it must not borrow the other word.
+                   */
+                  label: 'Not Started',
                   value: milestoneView ? milestoneView.notStarted : summary.milestonesNotStarted,
-                  // Matches the N/A grey in the STATUS column, so one word is never
-                  // shown in two colours on the same screen.
-                  color: '#9098A9',
+                  color: statusColor(STATUS.YET_TO_START),
                 },
               ]}
             />
