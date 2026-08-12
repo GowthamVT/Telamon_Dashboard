@@ -390,6 +390,26 @@ test('document fields are always sent, as a number or null -- never absent', asy
   }
 });
 
+test('only untagged rows count as Node Documents', () => {
+  /*
+   * The portal's Node Documents page lists rows with NO tag. A tagged row belongs to
+   * another view -- SITE_SUMMARY_JSONS to nothing user-facing, COP to the close-out
+   * package area. Matching only the JSON folder let Knolls' two COP files through
+   * and reported 7 against the portal's 5 files / 1.60 MB.
+   *
+   * Exercised against the expression directly, because the aggregation is stubbed.
+   */
+  const { NOT_A_DOCUMENT_EXPR } = require('../src/config/documents');
+  const [tagClause, typeClause] = NOT_A_DOCUMENT_EXPR.$and;
+
+  // The tag test must accept a missing key, an explicit null and an empty string,
+  // and reject any named folder.
+  assert.deepEqual(tagClause, { $in: [{ $ifNull: ['$tag', null] }, [null, '']] });
+
+  // Folders and placeholders are not files.
+  assert.deepEqual(typeClause.$not.$in[1], ['folder', 'required_placeholder']);
+});
+
 test('documentPct only reports once something is declared required', () => {
   const { documentPct } = require('../src/config/documents');
 

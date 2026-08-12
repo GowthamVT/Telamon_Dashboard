@@ -6,24 +6,40 @@
  * of those are not documents anyone uploaded.
  *
  * ---------------------------------------------------------------------------
- * WHAT IS EXCLUDED, AND WHY -- measured, not assumed.
+ * A DOCUMENT IS AN UNTAGGED ROW. Anything with a `tag` belongs to another view.
  *
- *   SITE_SUMMARY_JSONS folder   2,686 of Telamon's 3,466 rows. Machine-written
- *                               site summaries, authored by PYGLOBAL, pyservice
- *                               and ECSITE-ADMIN-3. Counting them would report
- *                               2,686 "documents" on nodes where a crew uploaded
- *                               nothing at all.
- *   typeOfDocument 'folder'     4 rows. A folder is not a file.
- *   'required_placeholder'      An expectation, not an upload -- see below.
- *   isDeleted: true             328 rows.
+ * `tag` holds the S3 folder a row was filed under, and the portal's Node Documents
+ * page lists only rows with no tag at all. Verified on Knolls, where the portal
+ * header reports both a count and a size:
  *
- * That leaves 448 real documents across 84 of 202 nodes.
+ *     portal   FILES 5 / 1000     SIZE 1.60 MB / 2.00 GB
+ *     untagged rows               5 files, 1.60 MB
  *
- * KEPT DELIBERATELY: 81 rows whose typeOfDocument is a mangled mime string
- * ("pdf;base64,JVBERi0xL", "octet-stream;base64,QXBwUmVnI"). The category field was
- * corrupted on write, but these are genuine uploads by named people
- * (chelsea.mclaughlin@telamon.com, amybeth.moe@telamon.com,
- * anthonywilliams@intechtn.com), so dropping them would undercount real work.
+ * Two independent quantities agreeing is what makes this the portal's rule rather
+ * than a coincidence. Knolls' 30 live rows break down as:
+ *
+ *     tag SITE_SUMMARY_JSONS   23   machine-written summaries, author PYGLOBAL
+ *     tag COP                   2   KNOLLS_PHOTOS.zip / .pdf, close-out package
+ *     no tag                    5   the five the portal lists
+ *
+ * The COP pair is why an earlier version reported 7 against the portal's 5. They
+ * are real files uploaded by real people (marc.hungerford@telamon.com,
+ * amybeth.moe@telamon.com) but they live in the portal's COP area, not under Node
+ * Documents, so counting them here double-counts a different screen's contents.
+ * Excluding only the JSON folder was not enough.
+ *
+ * Also excluded: typeOfDocument 'folder' (a folder is not a file),
+ * 'required_placeholder' (an expectation, not an upload -- see below), and
+ * isDeleted rows.
+ *
+ * That leaves 301 documents estate-wide, down from the 448 the JSON-only rule gave.
+ * Per node: Knolls 5, Basile 6, Wadley 9.
+ *
+ * KEPT DELIBERATELY: rows whose typeOfDocument is a mangled mime string
+ * ("pdf;base64,JVBERi0xL", "vnd.openxmlformats-...;base64,UEsDBBQAB"). The category
+ * field was corrupted on write, but these are genuine untagged uploads by named
+ * people and the portal lists them -- three of Basile's six and three of Wadley's
+ * nine are in this state.
  * ---------------------------------------------------------------------------
  *
  * ---------------------------------------------------------------------------
@@ -58,15 +74,6 @@
 /** Marks a row as the app's "this document is required but absent" placeholder. */
 const REQUIRED_PLACEHOLDER_TYPE = 'required_placeholder';
 
-/**
- * Machine-written summaries, keyed by the S3 folder in `tag`.
- *
- * Matched on the tag path rather than on createdBy: service accounts also upload
- * legitimate documents (ECSITE-ADMIN-3 authored the Cable Routing and Cross
- * Reference reports), so filtering by author would discard real files.
- */
-const SYSTEM_FOLDER_PATTERN = /SITE_SUMMARY_JSONS/;
-
 /*
  * These are aggregation EXPRESSIONS, for use inside $cond -- not query predicates.
  * Both counts have to come from one $group pass over the same rows, so a $match
@@ -74,14 +81,19 @@ const SYSTEM_FOLDER_PATTERN = /SITE_SUMMARY_JSONS/;
  * silently meaningless inside $cond.
  */
 
-/** True when the row is a document a person uploaded. */
+/**
+ * True when the row is a document the portal lists under Node Documents.
+ *
+ * The test is "has no tag", not "is not in the JSON folder". Filed rows belong to
+ * another screen -- SITE_SUMMARY_JSONS to nothing user-facing, COP to the close-out
+ * package area -- and matching only the JSON folder let Knolls' two COP files
+ * through, reporting 7 where the portal says 5.
+ *
+ * Covers a missing key, an explicit null and an empty string; all three occur.
+ */
 const NOT_A_DOCUMENT_EXPR = {
   $and: [
-    {
-      $not: {
-        $regexMatch: { input: { $ifNull: ['$tag', ''] }, regex: SYSTEM_FOLDER_PATTERN },
-      },
-    },
+    { $in: [{ $ifNull: ['$tag', null] }, [null, '']] },
     { $not: { $in: [{ $ifNull: ['$typeOfDocument', ''] }, ['folder', REQUIRED_PLACEHOLDER_TYPE]] } },
   ],
 };
@@ -111,7 +123,6 @@ function documentPct({ uploaded, required }) {
 
 module.exports = {
   REQUIRED_PLACEHOLDER_TYPE,
-  SYSTEM_FOLDER_PATTERN,
   NOT_A_DOCUMENT_EXPR,
   IS_PLACEHOLDER_EXPR,
   documentPct,
