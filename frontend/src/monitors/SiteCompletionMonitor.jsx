@@ -410,30 +410,21 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   }, [liveMs]);
 
   /**
-   * The stat cards, counted from the SAME checklist rows the table renders, so a
-   * card can never contradict the list beneath it.
+   * The N/A card's count, taken from the SAME tracker rows the table renders so the
+   * card cannot contradict the list beneath it.
    *
-   * "Documents" here means checklist items (21 on Wadley), not File_Upload fields
-   * (82). The table is headed DOCUMENT and lists the checklist, so the card has to
-   * count the same thing or the two disagree on screen.
+   * The other four cards read documents and milestones, which are different
+   * datasets; this one is the tracker's own tally.
    *
-   * There is deliberately no document-upload percentage. Across all of Telamon
-   * only 5 files have ever been uploaded -- 3 on Seymour, 1 on Port Barre, 1 on
-   * ARGONNE-CAMPUS -- so that figure would read 0% on virtually every node and
-   * look like a broken dashboard rather than an unused feature.
+   * Pooled scope counts node-by-task pairs, not distinct tasks. Counting distinct
+   * tasks by their MAJORITY status once made All and a single route report the same
+   * figures, because both had the same task list -- a rollup that does not grow with
+   * its scope is not a rollup. Summing per-node counts restores All >= route >= node.
    */
   const docStats = useMemo(() => {
     if (!checklist) return null;
     const pooled = checklist.some((i) => i.aggregated && i.nodeCount > 1);
 
-    /*
-     * Pooled scope counts node-by-item pairs, not document types.
-     *
-     * Counting types by their MAJORITY status made All and a single route report
-     * the same 8 missing / 2 N-A, because both had 12 types and similar
-     * majorities -- a rollup that does not grow with its scope is not a rollup.
-     * Summing the per-node counts restores All >= route >= node.
-     */
     const total = pooled
       ? checklist.reduce((t, i) => t + (i.nodeCount || 0), 0)
       : checklist.length;
@@ -443,36 +434,38 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     const inProgress = pooled
       ? checklist.reduce((t, i) => t + (i.inProgressCount || 0), 0)
       : checklist.filter((i) => i.status === 'inProgress').length;
-    const notStarted = total - complete - inProgress;
 
-    return {
-      pooled,
-      /** Distinct tasks, for the label when pooling. */
-      types: checklist.length,
-      total,
-      complete,
-      inProgress,
-      notStarted,
-      pct: total > 0 ? Math.round((complete / total) * 100) : null,
-    };
+    return { notStarted: total - complete - inProgress };
   }, [checklist]);
 
-  /** True when the payload is a rollup rather than one node. */
-  const isPooled = Boolean(liveMs && liveMs.aggregated);
-
+  /*
+   * The first three cards describe DOCUMENTS, from S3Document -- not the tracker
+   * table below them and nothing to do with milestones.
+   *
+   * UPLOADED % and MISSING read "--" because nothing in the source says which
+   * documents a Telamon node ought to have. ECSite has the feature (a
+   * required-document template writes placeholder rows) and other companies use it,
+   * but no template is configured for Telamon, so there is no denominator. Both
+   * figures start reporting the moment one is set up -- see config/documents.js.
+   */
   const cards = docStats
     ? [
         {
-          label: isPooled ? 'TASKS' : 'TOTAL TASKS',
-          value: isPooled ? docStats.types : docStats.total,
+          label: 'TOTAL DOCUMENTS',
+          value: liveMs ? liveMs.documents : '--',
           color: '#F7F8FB',
         },
         {
-          label: 'COMPLETE %',
-          value: docStats.pct === null ? '--' : `${docStats.pct}%`,
-          color: docStats.pct === null ? '#5A6478' : pctColor(docStats.pct),
+          label: 'UPLOADED %',
+          value: liveMs && liveMs.documentsPct !== null ? `${liveMs.documentsPct}%` : '--',
+          color:
+            liveMs && liveMs.documentsPct !== null ? pctColor(liveMs.documentsPct) : '#5A6478',
         },
-        { label: 'IN PROGRESS', value: docStats.inProgress, color: '#F5B133' },
+        {
+          label: 'MISSING',
+          value: liveMs && liveMs.documentsRequired > 0 ? liveMs.documentsRequired : '--',
+          color: liveMs && liveMs.documentsRequired > 0 ? DANGER : '#5A6478',
+        },
         {
           label: 'N/A',
           value: docStats.notStarted,

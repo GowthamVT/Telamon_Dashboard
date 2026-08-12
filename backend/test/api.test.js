@@ -114,6 +114,19 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
     return { rows: [{ _id: NODE_ID, reports: 5, reportDays: 4, firstDay: '2026-07-01', lastDay: '2026-07-10' }], rowCount: 1, elapsedMs: 1 };
   }
 
+  if (collection === 'S3Document') {
+    /*
+     * 4 uploaded documents and NO required-document placeholder, which is the real
+     * Telamon situation: 448 uploads across 84 nodes, 0 placeholders.
+     * With nothing declaring an expectation, UPLOADED % and MISSING must be null.
+     */
+    return {
+      rows: [{ _id: NODE_ID, uploaded: 4, required: 0, lastDocument: '2026-07-27T00:00:00.000Z' }],
+      rowCount: 1,
+      elapsedMs: 1,
+    };
+  }
+
   if (collection === 'ProgressStats') {
     /*
      * 10 ProgressStats documents: 2 N/A, so 8 APPLICABLE fields -- which is what the
@@ -335,6 +348,39 @@ test('coverage excludes BOTH N/A and Not Required from the denominator', async (
   // incompleteFields is the portal's "Total Fields without Media".
   assert.equal(m.incompleteFields, 4);
   assert.ok(executed.some((e) => e.collection === 'ProgressStats'));
+});
+
+test('documents come from S3Document; missing stays null with no required list', async () => {
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  const m = body.metrics;
+
+  assert.equal(m.documents, 4, 'TOTAL DOCUMENTS counts uploaded files');
+  assert.equal(m.lastDocument, '2026-07-27');
+
+  /*
+   * The important assertion. Nothing in the source says which documents a Telamon
+   * node ought to have -- the required-document feature exists but no template is
+   * configured, so there are 0 placeholders across all 202 nodes.
+   *
+   * 0 would claim "nothing is missing" and 100% would claim "everything is
+   * uploaded". Both are inventions. Null renders as "--".
+   */
+  assert.equal(m.documentsRequired, 0);
+  assert.equal(m.documentsPct, null, 'UPLOADED % must be null, never 100%');
+  assert.ok(executed.some((e) => e.collection === 'S3Document'));
+});
+
+test('documentPct only reports once something is declared required', () => {
+  const { documentPct } = require('../src/config/documents');
+
+  // No expectation declared -> unknown, not complete.
+  assert.equal(documentPct({ uploaded: 4, required: 0 }), null);
+  assert.equal(documentPct({ uploaded: 0, required: 0 }), null);
+
+  // Once placeholders exist the figure is real: uploaded / (uploaded + outstanding).
+  assert.equal(documentPct({ uploaded: 3, required: 1 }), 75);
+  assert.equal(documentPct({ uploaded: 0, required: 5 }), 0);
+  assert.equal(documentPct({ uploaded: 9, required: 1 }), 90);
 });
 
 test('the portal Total Fields Count excludes N/A fields', async () => {

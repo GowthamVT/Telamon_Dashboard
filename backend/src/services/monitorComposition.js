@@ -12,6 +12,7 @@
  */
 const { MILESTONES } = require('../config/milestones');
 const { TRACKER_MILESTONES } = require('../config/tracker');
+const { documentPct } = require('../config/documents');
 
 /**
  * Route Monitor payload.
@@ -270,6 +271,7 @@ function poolMetrics(byNode) {
   // rather than a fabricated zero.
   const withWindow = nodes.filter((n) => n.missedDays !== null && n.missedDays !== undefined);
   const lastReports = nodes.map((n) => n.lastReport).filter(Boolean).sort();
+  const lastDocuments = nodes.map((n) => n.lastDocument).filter(Boolean).sort();
 
   return {
     aggregated: true,
@@ -279,6 +281,20 @@ function poolMetrics(byNode) {
     totalStages: sum('totalStages'),
     stagePhotos: sum('stagePhotos'),
     milestones,
+    /*
+     * Documents pool by simple addition -- one upload on one node is one upload in
+     * the rollup, so All >= route >= node holds.
+     *
+     * documentsPct is recomputed from the pooled totals rather than averaged: a mean
+     * of per-node percentages would weight a node with 1 document the same as one
+     * with 15. It stays null while no node in scope declares a required document,
+     * which today is every node.
+     */
+    documents: sum('documents'),
+    documentsRequired: sum('documentsRequired'),
+    documentsPct: documentPct({ uploaded: sum('documents'), required: sum('documentsRequired') }),
+    lastDocument: lastDocuments.length ? lastDocuments[lastDocuments.length - 1] : null,
+
     reports: sum('reports'),
     reportDays: sum('reportDays'),
     lastReport: lastReports.length ? lastReports[lastReports.length - 1] : null,

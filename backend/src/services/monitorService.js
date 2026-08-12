@@ -73,6 +73,13 @@ const {
   classifyStage,
 } = require('../config/milestones');
 
+/** What counts as a document, and why "missing" is null -- see config/documents.js. */
+const {
+  NOT_A_DOCUMENT_EXPR,
+  IS_PLACEHOLDER_EXPR,
+  documentPct,
+} = require('../config/documents');
+
 /** The tracker is the client's own milestone definition -- see config/tracker.js. */
 const {
   TRACKER_FORM_NAME,
@@ -737,6 +744,37 @@ async function getNodeMetrics(scope = {}) {
       rows.forEach((r) => coverageByNode.set(r._id, r));
     }
 
+    /* ---- 5c. documents, from S3Document ----
+     *
+     * Two counts per node: files a person uploaded, and files the app says are
+     * required but absent. See config/documents.js for what is excluded and why --
+     * 2,686 of Telamon's 3,466 rows are machine-written site-summary JSONs.
+     *
+     * The required count is 0 across all of Telamon, because no required-document
+     * template is configured for it. That is why UPLOADED % and MISSING report
+     * null rather than a number.
+     */
+    const documentsByNode = new Map();
+    {
+      const { rows } = await mongo.aggregate(
+        'S3Document',
+        [
+          ...unwindToNodes(nodeIds),
+          { $match: { isDeleted: { $ne: true } } },
+          {
+            $group: {
+              _id: '$nodeIdList',
+              uploaded: { $sum: { $cond: [NOT_A_DOCUMENT_EXPR, 1, 0] } },
+              required: { $sum: { $cond: [IS_PLACEHOLDER_EXPR, 1, 0] } },
+              lastDocument: { $max: { $cond: [NOT_A_DOCUMENT_EXPR, '$createdAt', null] } },
+            },
+          },
+        ],
+        { label: 'mongo-metrics-documents' }
+      );
+      rows.forEach((r) => documentsByNode.set(r._id, r));
+    }
+
     /* ---- 6. daily reports ----
      * Forms identified by NAME in the definitions, deliberately not via the
      * node's checklist: the DAILY REPORT FORM is frequently absent from it.
@@ -808,6 +846,7 @@ async function getNodeMetrics(scope = {}) {
       const m = mediaByNode.get(nodeId) || { photosAll: 0, fieldsCovered: 0 };
       const r = reportsByNode.get(nodeId) || null;
       const pm = photosByNode.get(nodeId) || null;
+      const d = documentsByNode.get(nodeId) || null;
       const photoFields = Number(f.photoFields) || 0;
 
       /*
@@ -882,6 +921,27 @@ async function getNodeMetrics(scope = {}) {
             pct: mapped && total > 0 ? Math.round((done / total) * 100) : null,
           };
         }),
+        /**
+         * Documents a person uploaded. The card's TOTAL DOCUMENTS.
+         *
+         * Machine-written site-summary JSONs are excluded -- they outnumber real
+         * uploads six to one on Telamon.
+         */
+        documents: d ? Number(d.uploaded) || 0 : 0,
+        /**
+         * Documents the app says are required but absent. The card's MISSING.
+         *
+         * 0 across all of Telamon: the required-document feature exists and is used
+         * by other companies, but no template is configured here. See
+         * config/documents.js -- this is why documentPct is null.
+         */
+        documentsRequired: d ? Number(d.required) || 0 : 0,
+        documentsPct: documentPct({
+          uploaded: d ? d.uploaded : 0,
+          required: d ? d.required : 0,
+        }),
+        lastDocument: d && d.lastDocument ? new Date(d.lastDocument).toISOString().slice(0, 10) : null,
+
         reports: r ? Number(r.reports) || 0 : 0,
         reportDays: r ? Number(r.reportDays) || 0 : 0,
         lastReport: r ? r.lastDay || null : null,
