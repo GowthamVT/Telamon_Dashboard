@@ -775,11 +775,24 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 applied. Saying "no tasks match your filters" there would blame the
                 reader for a property of the data.
               */}
-              {!visibleItems || (checklist && checklist.length > 0)
-                ? 'No tasks match your filters.'
-                : trackerAbsent
-                  ? 'This API response carried no tracker data, so nothing can be listed. The server is running an older build than this page — restart the backend.'
-                  : 'No TELAMON-ILA-TRACKER entries for this selection. The tracker is where the client records M1–M5 tasks, and it has not been filled in here — the portal shows the same: "TELAMON-ILA-TRACKER (0)".'}
+              {!visibleItems || (checklist && checklist.length > 0) ? (
+                'No tasks match your filters.'
+              ) : (
+                <>
+                  No records to display.
+                  {/*
+                    The reason line is shown ONLY when the response actually carried a
+                    tracker that was empty. With no tracker field at all we cannot say
+                    why -- that would assert something about the data the response
+                    never told us -- so the neutral line stands alone.
+                  */}
+                  {trackerAbsent ? null : (
+                    <span className="mon-empty-note">
+                      No TELAMON-ILA-TRACKER tasks have been recorded for this selection.
+                    </span>
+                  )}
+                </>
+              )}
             </div>
           ) : null}
         </div>
