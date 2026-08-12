@@ -199,7 +199,9 @@ export function NoDataCell({ hint }) {
 }
 
 export function ProgressCell({ done, total, pct, color, note, title }) {
-  if (pct === null || pct === undefined) return <NoDataCell hint="Photo counts: source not yet identified" />;
+  if (pct === null || pct === undefined) {
+    return <NoDataCell hint="No media figure in this response" />;
+  }
   return (
     <div className="mon-progress" title={title}>
       <div className="mon-progress-nums">
@@ -226,7 +228,7 @@ export function ProgressCell({ done, total, pct, color, note, title }) {
  */
 export function ReportsCell({ count, missedDays, reportDays }) {
   if (count === null || count === undefined)
-    return <NoDataCell hint="Daily reports: source not yet identified" />;
+    return <NoDataCell hint="No daily-report figure in this response" />;
 
   if (missedDays === null || missedDays === undefined) {
     return (
@@ -262,7 +264,7 @@ export function ReportsCell({ count, missedDays, reportDays }) {
  * node is never reported as behind on something that cannot be measured.
  */
 export function MilestoneCell({ milestones, colorFor, mapped = true }) {
-  if (!milestones) return <NoDataCell hint="Milestones: source not yet identified" />;
+  if (!milestones) return <NoDataCell hint="No milestone figures in this response" />;
 
   const items = milestones.map((m, i) =>
     typeof m === 'number'
