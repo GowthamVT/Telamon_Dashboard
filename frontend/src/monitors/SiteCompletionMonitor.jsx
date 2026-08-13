@@ -245,7 +245,6 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       inProgress: measurable.filter((m) => (m.pct > 0 && m.pct < 100) || (m.pct === 0 && m.inProgress > 0))
         .length,
       notStarted: measurable.filter((m) => m.pct === 0 && !m.inProgress).length,
-      mapped: Boolean(liveMs) && liveMs.milestonesMapped !== false,
     };
   }, [live, liveMs]);
 
@@ -657,13 +656,8 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 );
               })}
             </div>
-            {milestoneView && !milestoneView.mapped ? (
-              <p className="mon-cell-sub" style={{ marginTop: 10, color: '#F5A623' }}>
-                No TELAMON-ILA-TRACKER tasks for this selection, so M1&ndash;M4 percentages are
-                withheld rather than shown as 0%. Milestones come from that tracker, which the
-                client has not filled in here. The photo stage list below is still live.
-              </p>
-            ) : null}
+            {/* Explanatory note removed by request. The bars already show "--" where
+                there are no tracker tasks, and the table's empty state says why. */}
           </div>
         </div>
       </div>
