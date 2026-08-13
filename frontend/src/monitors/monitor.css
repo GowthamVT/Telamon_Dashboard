@@ -360,22 +360,21 @@
   gap: 12px;
 }
 
-/* "Milestone is yet to be configured for this site" -- centred across the bars it
-   replaces the reading of, and tinted so it registers as a state rather than a
-   caption. Amber matches In Progress elsewhere: attention, not alarm. */
+/* "Milestone is yet to be configured for this site"
+   Plain text on the card's own ground, centred under the bars and separated by a
+   rule.
+   It was amber-on-amber-tint in a bordered pill. Measured, that was 9.1:1 -- not a
+   contrast failure -- so the problem was the TREATMENT: a saturated fill, a border
+   and semibold weight made a badge that competed with the bars for attention, and
+   the glow around the glyphs made the words harder to settle on than a plain line.
+   The neutral text token reads at 15.9:1 and asks for nothing. */
 .mon-miles-empty {
-  margin: 16px auto 0;
-  padding: 8px 14px;
-  width: fit-content;
-  max-width: 100%;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--mon-border);
   text-align: center;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: #f5b133;
-  background: rgba(245, 177, 51, 0.12);
-  border: 1px solid rgba(245, 177, 51, 0.28);
-  border-radius: 8px;
+  font-size: 13px;
+  color: var(--mon-text);
 }
 
 .mon-mrow {
