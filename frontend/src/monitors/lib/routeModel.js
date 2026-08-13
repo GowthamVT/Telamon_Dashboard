@@ -132,26 +132,30 @@ export function rowsFromNodes(nodes = []) {
       stagePhotos: m ? m.stagePhotos : null,
 
       /**
-       * PHOTOS column = APPROVED MEDIA / TOTAL MEDIA, matching the portal's pair.
+       * PHOTOS column = photo fields WITH MEDIA / photo fields that APPLY.
        *
-       * Upton reads 12/35 = 34%, exactly its Node Media header ("Total Approved
-       * Media 12", "Total Media Count 35").
+       * The same rule as the Site Monitor's "Photos uploaded" bar, so the two tabs
+       * report one number for one node: Boligee is 326/380 = 86% in both.
        *
-       * This replaced field coverage (13/159 there) by request. Coverage answers a
-       * different question -- how much of the photolist has anything against it --
-       * and is still carried below for the tooltip rather than discarded.
+       * It briefly showed approved media over total media (48/709 = 7% here). That is
+       * a reviewer sign-off rate, not upload progress, and it read as an almost-empty
+       * bar on a node whose photolist is 86% covered. The approval figures are still
+       * in the Site Monitor's Node Media strip and in this cell's tooltip.
        *
-       * Neither is photos/fields: a field takes many photos, so that ratio can
-       * exceed 100% (554 photos across 154 fields = 360%).
+       * Not photos/fields either: a field takes many photos, so that ratio can exceed
+       * 100% (554 photos across 154 fields = 360%).
+       *
+       * The denominator excludes fields the app marks N/A -- the same denominator the
+       * Site Monitor uses -- because a field nobody has to photograph is not
+       * outstanding work.
        */
-      photosUploaded: m ? m.approvedMedia : null,
-      photosTotal: m ? m.photos : null,
-      photosPct: m ? m.mediaApprovedPct : null,
+      photosUploaded: m ? m.fieldsCovered : null,
+      photosTotal: m ? (m.coverageDenominator ?? m.photoFields) : null,
+      photosPct: m ? m.coveragePct : null,
 
-      /** Field coverage, kept for the tooltip: covered / applicable, and what was excluded. */
-      coverageCovered: m ? m.fieldsCovered : null,
-      coverageTotal: m ? (m.coverageDenominator ?? m.photoFields) : null,
-      coveragePct: m ? m.coveragePct : null,
+      /** Media approval, kept for the tooltip: it is a different question. */
+      approvedMedia: m ? m.approvedMedia : null,
+      mediaApprovedPct: m ? m.mediaApprovedPct : null,
       photoFieldsDefined: m ? m.photoFields : null,
       naFields: m ? m.naFields || 0 : null,
       photoCount: m ? m.photos : null,

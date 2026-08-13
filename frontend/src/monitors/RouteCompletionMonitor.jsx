@@ -113,8 +113,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     }
     const withReports = rows.filter((r) => r.reports !== null && r.reports !== undefined);
     const withMissed = rows.filter((r) => r.missedDays !== null && r.missedDays !== undefined);
-    // Pooled (total approved / total media), not a mean of per-node percentages:
-    // averaging would weight a node with 3 media the same as one with 700.
+    // Pooled (total covered / total applicable), not a mean of per-node percentages:
+    // averaging would weight a 1-field node the same as a 380-field one.
     const covered = rows.reduce((sum, r) => sum + (r.photosUploaded || 0), 0);
     const defined = rows.reduce((sum, r) => sum + (r.photosTotal || 0), 0);
 
@@ -262,13 +262,14 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 title={
                   site.photoCount === null
                     ? undefined
-                    : `${site.photosUploaded} of ${site.photosTotal} media approved. ` +
-                      `Separately, ${site.coverageCovered} of ${site.coverageTotal} photo fields have media` +
+                    : `${site.photosUploaded} of ${site.photosTotal} photo fields have media` +
                       (site.naFields
                         ? ` (${site.naFields} of ${site.photoFieldsDefined} marked N/A and excluded).`
                         : '.') +
+                      ` ${site.photoCount} photos in total, ${site.approvedMedia} approved` +
+                      (site.mediaApprovedPct === null ? '.' : ` (${site.mediaApprovedPct}%).`) +
                       (site.photoPctApproximate
-                        ? ' Field coverage is approximate for this node -- no per-field data.'
+                        ? ' Coverage is approximate for this node -- no per-field data.'
                         : '')
                 }
               />
