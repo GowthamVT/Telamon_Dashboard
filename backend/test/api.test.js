@@ -283,12 +283,16 @@ test('GET /api/monitor/site returns header, metrics, stages, checklist and track
   assert.ok(Array.isArray(body.stages));
   assert.ok(Array.isArray(body.checklist));
   assert.ok(Array.isArray(body.tracker), 'tracker present -- the table reads from it');
-  // Five, not four: TELAMON-ILA-TRACKER carries M1..M5. The retired stage-name
-  // model only had four, so this number changing is the point of the switch.
-  assert.equal(body.milestoneDefs.length, 5);
+  /*
+   * M1..M4, by request. The portal's dropdown offers Milestone 1..5 and the sandbox
+   * tracker tags two tasks "Milestone 5"; those two now resolve to no milestone and
+   * show a "--" chip, rather than being folded into M4 -- which would be a mapping we
+   * invented rather than one the client gave us.
+   */
+  assert.equal(body.milestoneDefs.length, 4);
   assert.deepEqual(
     body.milestoneDefs.map((m) => m.label),
-    ['M1', 'M2', 'M3', 'M4', 'M5']
+    ['M1', 'M2', 'M3', 'M4']
   );
 });
 
@@ -343,7 +347,7 @@ test('Route Monitor milestones come from the tracker, not photo stages', async (
 
   assert.equal(m.trackerTasks, 0);
   assert.equal(m.milestonesMapped, false);
-  assert.equal(m.milestones.length, 5, 'M1..M5 from the tracker, not four from stages');
+  assert.equal(m.milestones.length, 4, 'M1..M4 from the tracker, not from photo stages');
   for (const ms of m.milestones) {
     assert.equal(ms.pct, null, `${ms.label} must be null, never a stage-derived figure`);
     assert.equal(ms.total, 0);

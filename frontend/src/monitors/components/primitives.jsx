@@ -264,11 +264,11 @@ export function ReportsCell({ count, missedDays, reportDays }) {
  * node is never reported as behind on something that cannot be measured.
  */
 /**
- * Milestone blocks: one per M1..M5, from TELAMON-ILA-TRACKER.
+ * Milestone blocks: one per M1..M4, from TELAMON-ILA-TRACKER.
  *
  * A block is grey unless the tracker has completion for it. Nothing is inferred from
- * photos any more, so a node where no milestone has been created shows five grey
- * blocks and "0/5 milestones" -- no colour implying progress nobody recorded.
+ * photos any more, so a node where no milestone has been created shows four grey
+ * blocks and "0/4 milestones" -- no colour implying progress nobody recorded.
  *
  * The caption counts ALL defined milestones, not just the measurable ones. Counting
  * only measurable ones read "0/0 milestones" on a node with no tracker, and

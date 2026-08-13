@@ -13,11 +13,12 @@
  * is theirs.
  *
  * -------------------------------------------------------------------------
- * MILESTONES M1..M5
+ * MILESTONES M1..M4
  *
- * Five, not four. The dropdown offers Milestone 1..5 plus Signature, and the one
- * populated tracker (LUMEN-ILA-SANDBOX, 251 rows) uses all five. The stage-name
- * model only ever had four.
+ * Four, by request. The portal's dropdown offers Milestone 1..5 plus Signature, and
+ * the one populated tracker (LUMEN-ILA-SANDBOX, 251 rows) tags two tasks "Milestone
+ * 5" -- those two now resolve to no milestone and show a "--" chip rather than being
+ * folded into M4.
  *
  * IMPORTANT: that tracker holds the task DEFINITIONS and their milestones, and no
  * completion data at all. Across all 251 rows there is not one date-like value in
@@ -47,7 +48,6 @@ const TRACKER_MILESTONES = [
   { key: 'm2', label: 'M2', name: 'Design, Engineering & General Construction' },
   { key: 'm3', label: 'M3', name: 'Shelter, Fencing & Electrical' },
   { key: 'm4', label: 'M4', name: 'Commissioning, ISP & Signoff' },
-  { key: 'm5', label: 'M5', name: 'Final' },
 ];
 
 /**
@@ -74,13 +74,19 @@ const GROUP_TO_MILESTONE = {
   2: 'm2', 3: 'm2', 4: 'm2', 5: 'm2', 6: 'm2', 7: 'm2', 8: 'm2',
   9: 'm3', 10: 'm3', 11: 'm3',
   12: 'm4', 13: 'm4', 14: 'm4', 15: 'm4', 16: 'm4', 17: 'm4',
-  18: 'm5',
 };
 
-/** "Milestone 3" | "M3" | "3" -> 'm3'. Null when unrecognised. */
+/**
+ * "Milestone 3" | "M3" | "3" -> 'm3'. Null when unrecognised.
+ *
+ * The range is 1-4 by request. The sandbox tracker does contain two tasks tagged
+ * "Milestone 5" (Task IDs in group 18); they now resolve to null, so they still
+ * appear in the table with a "--" chip but count towards no milestone bar. Nothing
+ * is hidden and nothing is folded into M4, which would be a mapping we invented.
+ */
 function milestoneFromValue(value) {
   if (!value) return null;
-  const n = String(value).match(/([1-5])\s*$/);
+  const n = String(value).match(/([1-4])\s*$/);
   if (!n) return null;
   return 'm' + n[1];
 }

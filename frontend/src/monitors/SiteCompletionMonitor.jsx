@@ -32,7 +32,7 @@ const EMPTY_TRACK = '#2A3142';
 const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'Not Started'];
 
 
-/** m1 < m2 < m3 < m4 < m5 < unmapped, so unmapped tasks read as an appendix. */
+/** m1 < m2 < m3 < m4 < unmapped, so unmapped tasks read as an appendix. */
 function milestoneRank(key) {
   return key ? Number(String(key).replace(/[^0-9]/g, '')) || 99 : 99;
 }
@@ -132,7 +132,7 @@ function DocumentRow({ item }) {
  * Site Completion Monitor: TELAMON-ILA-TRACKER tasks and milestones for a site.
  *
  * The table and the MILESTONE PROGRESS card both read the tracker, which is the
- * client's own M1..M5 definition. Photo coverage and daily reports are separate
+ * client's own M1..M4 definition. Photo coverage and daily reports are separate
  * cards fed by the photolist, and they are unaffected.
  *
  * Read-only by design. The reference mockup let the user upload files and toggle
@@ -226,13 +226,13 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     // table, so a missing `metrics` shows "--" rather than the sample's 100%/75%.
     if (!live) return null;
     // With no metrics, still name the milestones from the payload's own defs so the
-    // card shows M1..M5 at "--" instead of collapsing to a blank strip.
+    // card shows M1..M4 at "--" instead of collapsing to a blank strip.
     const items =
       liveMs?.milestones ||
       (live.milestoneDefs || []).map((d) => ({ ...d, pct: null, done: 0, total: 0, inProgress: 0 }));
     const measurable = items.filter((m) => m.pct !== null && m.pct !== undefined);
     // Pooled across TASKS, not a mean of percentages: M4 holds 124 tracker tasks
-    // and M5 holds 2, so averaging their percentages would over-weight M5 by 60x.
+    // and M1 holds 4, so averaging their percentages would over-weight M1 by 31x.
     const done = measurable.reduce((sum, m) => sum + (m.done || 0), 0);
     const total = measurable.reduce((sum, m) => sum + (m.total || 0), 0);
     return {
@@ -612,7 +612,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                   : `${milestoneView.overallPct}%`
                 : `${summary.overallPct}%`}
             </p>
-            {/* Names what the big figure is: completion across M1..M5, not the count
+            {/* Names what the big figure is: completion across M1..M4, not the count
                 of milestones or of tasks, both of which also appear on this card. */}
             <p className="mon-hero-caption">MILESTONE COMPLETION</p>
           </div>
@@ -680,7 +680,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             </div>
             {milestoneView && !milestoneView.mapped ? (
               <p className="mon-cell-sub" style={{ marginTop: 10, color: '#F5A623' }}>
-                No TELAMON-ILA-TRACKER tasks for this selection, so M1&ndash;M5 percentages are
+                No TELAMON-ILA-TRACKER tasks for this selection, so M1&ndash;M4 percentages are
                 withheld rather than shown as 0%. Milestones come from that tracker, which the
                 client has not filled in here. The photo stage list below is still live.
               </p>

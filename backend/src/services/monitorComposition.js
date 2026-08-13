@@ -214,7 +214,7 @@ async function composeSiteMonitor(scope, deps) {
     checklist,
     /** TELAMON-ILA-TRACKER tasks -- the source for the table and the milestones. */
     tracker,
-    /** M1..M5 definitions, so the UI can label bars without duplicating config. */
+    /** M1..M4 definitions, so the UI can label bars without duplicating config. */
     milestoneDefs: TRACKER_MILESTONES.map((m) => ({
       key: m.key,
       label: m.label,
