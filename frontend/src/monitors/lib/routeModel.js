@@ -96,6 +96,31 @@ const NODE_STATUS_MAP = {
   inactive: STATUS.YET_TO_START,
 };
 
+/**
+ * Elapsed time since a node started, as the sample's "8mo" label.
+ *
+ * COMPLETE calendar months, floored, which is what the reference figures are:
+ * 2025-11-18 reads 8mo on 2026-08-13 because the ninth month is not finished
+ * (13 < 18). Counting by 30-day blocks would say 9 and drift a day per month.
+ *
+ * `duration` used to hold node.nodeCode, which is why the column read
+ * "2026-03-30 - BOLIGEE" instead of an age.
+ *
+ * Null when there is no start date -- the label is then just the date, rather than
+ * an age computed from nothing. Clamped at 0 for a start date in the future.
+ */
+export function monthsSince(iso, today = new Date()) {
+  if (!iso) return null;
+  const start = new Date(iso);
+  if (Number.isNaN(start.getTime())) return null;
+
+  let months =
+    (today.getFullYear() - start.getFullYear()) * 12 + (today.getMonth() - start.getMonth());
+  // Not a whole month yet if the day-of-month has not come round again.
+  if (today.getDate() < start.getDate()) months -= 1;
+  return `${Math.max(months, 0)}mo`;
+}
+
 export function mapNodeStatus(raw) {
   if (!raw) return STATUS.YET_TO_START;
   return NODE_STATUS_MAP[String(raw).trim().toLowerCase()] || STATUS.IN_PROGRESS;
@@ -117,8 +142,7 @@ export function rowsFromNodes(nodes = []) {
       nodeId: node.nodeId,
       name: node.nodeName,
       start: node.startDate || '--',
-      duration: node.nodeCode || '',
-      rawStatus: node.workStatus || null,
+      duration: monthsSince(node.startDate),
       status: mapNodeStatus(node.workStatus),
       routeName: node.routeName,
       companyName: node.companyName,

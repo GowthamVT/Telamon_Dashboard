@@ -243,9 +243,11 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
               <div>
                 <p className="mon-cell-title">{site.name}</p>
                 <p className="mon-cell-sub">
+                  {/* Start date and age only. The node code and the raw status used
+                      to sit here too -- the code duplicated the site name above it,
+                      and the status duplicated the pill at the end of the row. */}
                   {site.start}
                   {site.duration ? ` · ${site.duration}` : ''}
-                  {site.rawStatus ? ` · ${site.rawStatus}` : ''}
                 </p>
                 {showRouteOnRows && site.routeName ? (
                   <p className="mon-cell-sub" style={{ color: '#4C8DFF' }}>
@@ -258,7 +260,9 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 total={site.photosTotal}
                 pct={site.photosPct}
                 color={statusColor(site.status)}
-                note={site.photoCount === null ? null : `${site.photoCount} photos`}
+                /* No sub-note: the raw photo count duplicated the denominator's story
+                   and is in the tooltip, which also carries the approval figures. */
+                note={null}
                 title={
                   site.photoCount === null
                     ? undefined
