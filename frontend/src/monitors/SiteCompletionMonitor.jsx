@@ -207,17 +207,6 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     return (live.tracker || []).filter((t) => !t.isSectionHeader);
   }, [live]);
 
-  /**
-   * The payload carried no `tracker` field at all.
-   *
-   * Different from an empty tracker, and worth saying so: an empty tracker is the
-   * data telling the truth, whereas a missing field means the API answering is
-   * older than this page -- a server that was not restarted, or a half-finished
-   * deploy. Reporting "the client has not filled in the tracker" there would state
-   * something about the data that we have not actually been told.
-   */
-  const trackerAbsent = Boolean(live) && live.tracker === undefined;
-
   const milestoneView = useMemo(() => {
     // Same rule as the table: once there is a live payload the mock is off the
     // table, so a missing `metrics` shows "--" rather than the sample's 100%/75%.
@@ -656,8 +645,14 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 );
               })}
             </div>
-            {/* Explanatory note removed by request. The bars already show "--" where
-                there are no tracker tasks, and the table's empty state says why. */}
+            {/* One line, in place of four "--" bars with nothing to explain them.
+                Shown only when NO milestone has a figure -- a node part-way through
+                still shows its bars rather than being written off as unconfigured. */}
+            {milestoneView && milestoneView.measurable.length === 0 ? (
+              <p className="mon-cell-sub" style={{ marginTop: 12 }}>
+                Milestone is yet to be configured for this site
+              </p>
+            ) : null}
           </div>
         </div>
       </div>
@@ -760,7 +755,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <div className="mon-table-scroll" style={{ '--mon-cols': COLS, '--mon-min': '640px' }}>
           <div className="mon-grid mon-thead" role="row">
             <div role="columnheader">MILESTONE</div>
-            <div role="columnheader">TASK</div>
+            {/* DOCUMENT by request. The rows are tracker TASKS; the heading is the
+                client's own word for them. */}
+            <div role="columnheader">DOCUMENT</div>
             <div role="columnheader">STATUS</div>
           </div>
 
@@ -781,44 +778,22 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 applied. Saying "no tasks match your filters" there would blame the
                 reader for a property of the data.
               */}
-              {!visibleItems || (checklist && checklist.length > 0) ? (
-                'No tasks match your filters.'
-              ) : (
-                <>
-                  No records to display.
-                  {/*
-                    The reason line is shown ONLY when the response actually carried a
-                    tracker that was empty. With no tracker field at all we cannot say
-                    why -- that would assert something about the data the response
-                    never told us -- so the neutral line stands alone.
-                  */}
-                  {trackerAbsent ? null : (
-                    <span className="mon-empty-note">
-                      No TELAMON-ILA-TRACKER tasks have been recorded for this selection.
-                    </span>
-                  )}
-                </>
-              )}
+              {!visibleItems || (checklist && checklist.length > 0)
+                ? 'No tasks match your filters.'
+                : 'Milestone is yet to be configured for this site'}
             </div>
           ) : null}
         </div>
       </div>
 
-      <p className="mon-foot">
-        {visibleItems ? (
-          <>
-            {visibleItems.length} of {checklist.length} tracker tasks shown ·{' '}
-            {checklist.filter((i) => i.status === 'complete').length} Complete,{' '}
-            {checklist.filter((i) => i.status === 'inProgress').length} In Progress,{' '}
-            {checklist.filter((i) => i.status === 'notStarted').length} Not Started
-          </>
-        ) : (
-          <>
-            {visible.length} of {summary.totalDocuments} documents shown · {summary.naCount}{' '}
-            marked N/A and excluded from completion
-          </>
-        )}
-      </p>
+      {/* Footer tally removed by request. The sample path keeps its own, since that
+          screen is only ever the design reference. */}
+      {visibleItems ? null : (
+        <p className="mon-foot">
+          {visible.length} of {summary.totalDocuments} documents shown · {summary.naCount}{' '}
+          marked N/A and excluded from completion
+        </p>
+      )}
     </div>
   );
 }
