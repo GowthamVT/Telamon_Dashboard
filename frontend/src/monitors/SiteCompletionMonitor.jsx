@@ -349,23 +349,21 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     if (!live) {
       return {
         submitted: data.reports.submitted,
-        submittedNote: null,
         missedDays: data.reports.missedDays,
         missedNote: null,
       };
     }
     if (!liveMs) {
-      return { submitted: null, submittedNote: null, missedDays: null, missedNote: null };
+      return { submitted: null, missedDays: null, missedNote: null };
     }
-    const days = liveMs.reportDays;
     return {
       submitted: liveMs.reports,
-      submittedNote:
-        liveMs.reports === 0
-          ? 'none submitted'
-          : `on ${days} day${days === 1 ? '' : 's'}${
-              liveMs.lastReport ? ` · last ${liveMs.lastReport}` : ''
-            }`,
+      /*
+       * No sub-line under the count, by request -- "on 12 days · last 2026-08-03" is
+       * gone. The "none submitted" variant went with it: a big 0 above the label
+       * already says that, so keeping it would have made the line appear only in the
+       * one case where it added nothing.
+       */
       missedDays: liveMs.missedDays ?? null,
       /*
        * Definition note removed by request. "no reporting window" is kept for the
@@ -694,9 +692,6 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             <div>
               <p className="mon-pr-num">{reportsCard.submitted === null ? '--' : reportsCard.submitted}</p>
               <p className="mon-pr-sub">Daily reports submitted</p>
-              {reportsCard.submittedNote ? (
-                <p className="mon-cell-sub">{reportsCard.submittedNote}</p>
-              ) : null}
             </div>
             <div>
               <p
