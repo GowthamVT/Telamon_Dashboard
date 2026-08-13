@@ -11,7 +11,6 @@ import {
 import { filterItems, ITEM_STATUS, siteStatus, summarise } from './lib/siteModel';
 import {
   DANGER,
-  describeStatusScope,
   pctColor,
   progressColor,
   STATUS,
@@ -173,8 +172,6 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     live?.site?.route ||
     (isAggregate && live?.site ? `All routes (${live.site.routeCount})` : data.site.route);
   const startDate = live?.site?.start || data.site.start;
-  const kpi = live?.statusCounts || null;
-  const scopeNote = describeStatusScope(kpi);
 
   /**
    * Live milestone progress for THIS node.
@@ -563,29 +560,11 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <p className="mon-route-value">{routeName}</p>
       </div>
 
-      {/* Live status KPI. Company-scoped by design, so it is kept visually separate
-          from the per-node milestone card below -- two scopes, never conflated. */}
-      {kpi ? (
-        <div className="mon-card">
-          <p className="mon-card-label mon-card-label--lg">
-            NODE STATUS — {String(scopeNote.label || 'company').toUpperCase()} · {scopeNote.total}{' '}
-            NODES ({scopeNote.level})
-          </p>
-          <CountBreakdown
-            counts={[
-              { label: 'Complete', value: kpi.complete, color: statusColor(STATUS.COMPLETE) },
-              { label: 'In Progress', value: kpi.inProgress, color: statusColor(STATUS.IN_PROGRESS) },
-              { label: 'Yet to Start', value: kpi.yetToStart, color: statusColor(STATUS.YET_TO_START) },
-            ]}
-          />
-          <p className="mon-cell-sub">
-            Latest status per node, {scopeNote.level}
-            {scopeNote.noHistory > 0
-              ? ` · ${scopeNote.noHistory} of ${scopeNote.total} nodes have no status history and are counted as Yet to Start`
-              : ''}
-          </p>
-        </div>
-      ) : null}
+      {/* NODE STATUS card removed from this tab by request. It still exists on the
+          Route Monitor, where a node-status breakdown across many rows earns its
+          place; here the scope is usually one node, so it was a three-way split of 1.
+
+          statusCounts is still in the payload -- only this visual is gone. */}
 
       {/* Milestone progress: hero figure + per-milestone bars */}
       <div className="mon-card">
