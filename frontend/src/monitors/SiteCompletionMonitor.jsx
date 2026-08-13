@@ -390,13 +390,17 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     if (!liveMs) return null;
     const n = (v) => (v === null || v === undefined ? '--' : v);
     return [
-      { label: 'Approved', value: n(liveMs.approvedMedia) },
-      { label: 'Rejected', value: n(liveMs.rejectedMedia), color: liveMs.rejectedMedia > 0 ? DANGER : undefined },
-      { label: 'Ignored', value: n(liveMs.ignoredMedia) },
-      { label: 'Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
-      { label: 'Media', value: n(liveMs.photos) },
+      { label: 'Total Approved', value: n(liveMs.approvedMedia) },
+      {
+        label: 'Total Rejected',
+        value: n(liveMs.rejectedMedia),
+        color: liveMs.rejectedMedia > 0 ? DANGER : undefined,
+      },
+      { label: 'Total Ignored', value: n(liveMs.ignoredMedia) },
+      { label: 'Total Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
+      { label: 'Total Media', value: n(liveMs.photos) },
       { label: 'Not applicable', value: n(liveMs.naFields), color: '#9098A9' },
-      { label: 'Fields w/o media', value: n(liveMs.incompleteFields) },
+      { label: 'Total Fields w/o media', value: n(liveMs.incompleteFields) },
     ];
   }, [liveMs]);
 
