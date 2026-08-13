@@ -328,6 +328,32 @@ test('aggregate scope yields name:null so the header cannot claim one node', asy
   assert.equal(body.site.detailName, 'Test Node', 'detailName still says which node');
 });
 
+test('Route Monitor milestones come from the tracker, not photo stages', async () => {
+  /*
+   * The MILESTONES column used to map photolist stage names onto M1-M4 with a rule of
+   * ours, which painted amber blocks on nodes where nobody had created a milestone --
+   * a stage counted as done as soon as ONE photo existed in it. It also disagreed with
+   * the Site Monitor for the same node at the same moment.
+   *
+   * The stub returns no tracker rows, which is the real state on 201 of 202 nodes, so
+   * every milestone must be null and the blocks render grey.
+   */
+  const { body } = await request(`/api/monitor/route?siteId=${SITE_ID}`);
+  const m = body.nodes[0].metrics;
+
+  assert.equal(m.trackerTasks, 0);
+  assert.equal(m.milestonesMapped, false);
+  assert.equal(m.milestones.length, 5, 'M1..M5 from the tracker, not four from stages');
+  for (const ms of m.milestones) {
+    assert.equal(ms.pct, null, `${ms.label} must be null, never a stage-derived figure`);
+    assert.equal(ms.total, 0);
+  }
+  assert.ok(
+    executed.some((e) => e.label === 'mongo-tracker-forms'),
+    'the route endpoint must query the tracker'
+  );
+});
+
 test('GET /api/monitor/route attaches metrics to each row', async () => {
   const { status, body } = await request(`/api/monitor/route?siteId=${SITE_ID}`);
   assert.equal(status, 200);

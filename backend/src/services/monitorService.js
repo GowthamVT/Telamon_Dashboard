@@ -1538,6 +1538,8 @@ async function getRouteMonitor(scope = {}) {
     getStatusCounts,
     listNodes,
     getNodeMetrics,
+    getNodeTracker,
+    milestonesFromTracker,
   });
 }
 

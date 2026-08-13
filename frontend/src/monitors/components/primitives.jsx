@@ -263,7 +263,19 @@ export function ReportsCell({ count, missedDays, reportDays }) {
  * track with an explanatory tooltip, and are excluded from the "n/4" count so a
  * node is never reported as behind on something that cannot be measured.
  */
-export function MilestoneCell({ milestones, colorFor, mapped = true }) {
+/**
+ * Milestone blocks: one per M1..M5, from TELAMON-ILA-TRACKER.
+ *
+ * A block is grey unless the tracker has completion for it. Nothing is inferred from
+ * photos any more, so a node where no milestone has been created shows five grey
+ * blocks and "0/5 milestones" -- no colour implying progress nobody recorded.
+ *
+ * The caption counts ALL defined milestones, not just the measurable ones. Counting
+ * only measurable ones read "0/0 milestones" on a node with no tracker, and
+ * "template not mapped" before that, which described the retired photolist rule
+ * rather than anything the client would recognise.
+ */
+export function MilestoneCell({ milestones, colorFor }) {
   if (!milestones) return <NoDataCell hint="No milestone figures in this response" />;
 
   const items = milestones.map((m, i) =>
@@ -274,13 +286,14 @@ export function MilestoneCell({ milestones, colorFor, mapped = true }) {
 
   const measurable = items.filter((m) => m.pct !== null && m.pct !== undefined);
   const done = measurable.filter((m) => m.pct === 100).length;
+  const total = items.length;
 
   const tip = (m) => {
     if (m.pct === null || m.pct === undefined) {
-      return `${m.label}: not measurable${m.reason ? ` -- ${m.reason}` : ''}`;
+      return `${m.label}${m.name ? ` (${m.name})` : ''}: no tracker tasks recorded`;
     }
     return `${m.label}${m.name ? ` (${m.name})` : ''}: ${m.pct}%${
-      m.total ? ` -- ${m.done} of ${m.total} stages` : ''
+      m.total ? ` -- ${m.done} of ${m.total} tracker tasks complete` : ''
     }`;
   };
 
@@ -298,13 +311,9 @@ export function MilestoneCell({ milestones, colorFor, mapped = true }) {
       </div>
       <p
         className="mon-miles-sub"
-        style={{ color: measurable.length > 0 && done === measurable.length ? '#34E0A1' : '#5A6478' }}
+        style={{ color: total > 0 && done === total ? '#34E0A1' : '#5A6478' }}
       >
-        {!mapped
-          ? 'template not mapped'
-          : measurable.length === 0
-            ? 'not measurable'
-            : `${done}/${measurable.length} milestones`}
+        {total === 0 ? 'no milestones' : `${done}/${total} milestones`}
       </p>
     </div>
   );

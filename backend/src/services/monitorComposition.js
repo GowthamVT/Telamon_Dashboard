@@ -40,10 +40,37 @@ async function composeRouteMonitor(scope, deps) {
     ? routes.routes[0]
     : routes.routes.find((r) => r.siteId === scope.siteId);
 
-  // Table rows: the nodes in scope, plus their milestone/report metrics. Fetched
-  // here rather than by separate client calls so the header, KPI and rows are
-  // always the same slice of data.
-  const [nodes, metrics] = await Promise.all([deps.listNodes(scope), deps.getNodeMetrics(scope)]);
+  // Table rows: the nodes in scope, plus their metrics. Fetched here rather than by
+  // separate client calls so the header, KPI and rows are always the same slice.
+  const [nodes, metrics, tracker] = await Promise.all([
+    deps.listNodes(scope),
+    deps.getNodeMetrics(scope),
+    deps.getNodeTracker(scope),
+  ]);
+
+  /*
+   * MILESTONES COME FROM THE TRACKER, as they already do on the Site Monitor.
+   *
+   * The MILESTONES column used to map photolist STAGE NAMES onto M1-M4 with a rule
+   * written in our own config. That rule was never the client's, and it contradicted
+   * the other tab: LUMEN-ILA-SANDBOX read M2/M3/M4 at 100% here and 0% there, for the
+   * same node at the same moment. It also painted amber blocks on nodes where nobody
+   * has created a milestone, because a stage counted as done as soon as ONE photo
+   * existed in it -- six nodes showed a COMPLETED milestone while under 60% of their
+   * photo fields had media.
+   *
+   * The tracker is empty on all but one node, so almost every row now shows grey
+   * blocks. That is the honest state and it is what was asked for: no bars where no
+   * milestone exists.
+   */
+  for (const node of nodes.nodes) {
+    const m = metrics.byNode[node.nodeId];
+    if (!m) continue;
+    const tasks = tracker.byNode[node.nodeId] || [];
+    m.milestones = deps.milestonesFromTracker(tasks);
+    m.milestonesMapped = tasks.some((t) => !t.isSectionHeader && t.milestone);
+    m.trackerTasks = tasks.filter((t) => !t.isSectionHeader).length;
+  }
 
   // Distinct companies actually in scope -- "All Telamon (4)" spans four.
   const companies = new Set(nodes.nodes.map((n) => n.companyName).filter(Boolean));

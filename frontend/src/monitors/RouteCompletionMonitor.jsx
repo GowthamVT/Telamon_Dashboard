@@ -285,7 +285,6 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
               <MilestoneCell
                 milestones={site.milestones}
                 colorFor={milestoneColor}
-                mapped={site.milestonesMapped !== false}
               />
               <OverallCell pct={site.photosPct} color={statusColor(site.status)} />
               <div>
