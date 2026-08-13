@@ -1,15 +1,22 @@
 import { useMemo } from 'react';
 
 /**
- * Company > Site > Node scope selector.
+ * Company > Route > Site scope selector.
  *
- * Selecting a level clears the levels BELOW it: a nodeId that belonged to the
- * previous site would otherwise survive the change and silently contradict the
- * new selection.
+ * WORDING vs FIELD NAMES. The labels read COMPANY / ROUTE / SITE, which is what the
+ * client calls these levels. The data underneath uses the portal's names, and they are
+ * one step out of step:
  *
- * The status KPI card deliberately does not shrink as you drill -- it is a
- * company-level figure. Only the header and (later) the per-node metrics follow
- * the selection.
+ *   picker "ROUTE"  ->  scope.siteId, tree.sites,  Site.siteName
+ *   picker "SITE"   ->  scope.nodeId, tree.nodes,  SmallCellNode.nodeName
+ *
+ * So `sites.length` counts routes and `nodes.length` counts sites here. Renaming the
+ * fields to match the labels would put this dashboard's vocabulary at odds with the
+ * database and every query in monitorService, which is the worse trade -- but the
+ * mismatch is real and this is the file where it bites.
+ *
+ * Selecting a level clears the levels BELOW it: a nodeId that belonged to the previous
+ * route would otherwise survive the change and silently contradict the new selection.
  */
 const NO_COMPANIES = [];
 
@@ -63,7 +70,7 @@ export function ScopePicker({ tree, scope, onChange, loading, error }) {
           <option value="">All Telamon ({tree?.totals?.companies ?? '…'})</option>
           {companies.map((c) => (
             <option key={c.companyId} value={c.companyId}>
-              {c.companyName} ({c.nodeCount} nodes)
+              {c.companyName} ({c.nodeCount} sites)
             </option>
           ))}
         </select>
@@ -74,7 +81,7 @@ export function ScopePicker({ tree, scope, onChange, loading, error }) {
       </span>
 
       <label className="mon-scope-field">
-        <span className="mon-scope-label">SITE / ROUTE</span>
+        <span className="mon-scope-label">ROUTE</span>
         <select
           className="mon-select"
           value={scope.siteId || ''}
@@ -83,7 +90,7 @@ export function ScopePicker({ tree, scope, onChange, loading, error }) {
             onChange({ ...scope, siteId: e.target.value || undefined, nodeId: undefined })
           }
         >
-          <option value="">All sites ({sites.length})</option>
+          <option value="">All routes ({sites.length})</option>
           {sites.map((s) => (
             <option key={s.siteId} value={s.siteId}>
               {s.siteName} ({s.nodes.length})
@@ -97,14 +104,16 @@ export function ScopePicker({ tree, scope, onChange, loading, error }) {
       </span>
 
       <label className="mon-scope-field">
-        <span className="mon-scope-label">NODE</span>
+        <span className="mon-scope-label">SITE</span>
         <select
           className="mon-select"
           value={scope.nodeId || ''}
           disabled={loading || nodes.length === 0}
           onChange={(e) => onChange({ ...scope, nodeId: e.target.value || undefined })}
         >
-          <option value="">{selectedSite ? `All nodes (${nodes.length})` : 'Select a site first'}</option>
+          <option value="">
+            {selectedSite ? `All sites (${nodes.length})` : 'Select a route first'}
+          </option>
           {nodes.map((n) => (
             <option key={n.nodeId} value={n.nodeId}>
               {n.nodeName}
@@ -115,7 +124,8 @@ export function ScopePicker({ tree, scope, onChange, loading, error }) {
 
       {tree?.totals ? (
         <span className="mon-scope-note">
-          {tree.totals.companies} companies · {tree.totals.sites} sites · {tree.totals.nodes} nodes
+          {tree.totals.companies} companies · {tree.totals.sites} routes ·{' '}
+          {tree.totals.nodes} sites
         </span>
       ) : null}
     </div>

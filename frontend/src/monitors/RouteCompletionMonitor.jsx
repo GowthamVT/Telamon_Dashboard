@@ -86,10 +86,15 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     ? live.route.companyName || `${live.route.companyCount} companies`
     : null;
 
+  /*
+   * "sites", not "nodes" -- the picker's vocabulary. routeCount counts routes and
+   * nodeCount counts sites; see the note in ScopePicker on why the field names stay
+   * one step out of step with the labels.
+   */
   const subtitle = live?.route
     ? isAggregate
-      ? `${live.route.routeCount} sites · ${live.route.nodeCount} nodes · ${companyLabel}`
-      : `${live.route.nodeCount} nodes · ${companyLabel}`
+      ? `${live.route.routeCount} routes · ${live.route.nodeCount} sites · ${companyLabel}`
+      : `${live.route.nodeCount} sites · ${companyLabel}`
     : `${summary.total} sites`;
 
 
