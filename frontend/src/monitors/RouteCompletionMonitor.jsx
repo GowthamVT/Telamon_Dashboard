@@ -18,7 +18,6 @@ import {
 import { filterSites, rowsFromNodes, summarise } from './lib/routeModel';
 import {
   DANGER,
-  describeStatusScope,
   milestoneColor,
   pctColor,
   STATUS,
@@ -93,7 +92,6 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
       : `${live.route.nodeCount} nodes · ${companyLabel}`
     : `${summary.total} sites`;
 
-  const scopeNote = describeStatusScope(kpi);
 
   /**
    * Card totals, summed from the SAME rows the table renders, so the card can
@@ -142,12 +140,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
 
       {/* Hero: route-average completion + node status breakdown. */}
       <div className="mon-card">
-        {scopeNote ? (
-          <p className="mon-card-label">
-            NODE STATUS — {String(scopeNote.label || 'company').toUpperCase()} · {scopeNote.total}{' '}
-            NODES ({scopeNote.level})
-          </p>
-        ) : null}
+        {/* Card label removed by request. The header above already names the company
+            and the node count, and the picker says which scope is selected. */}
         <div className="mon-hero">
           <HeroFigure
             pct={totals.photoPct === null ? 0 : totals.photoPct}
@@ -176,14 +170,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 { label: 'Yet to Start', value: yetToStart, color: STATUS_COLORS[STATUS.YET_TO_START].fg },
               ]}
             />
-            {scopeNote ? (
-              <p className="mon-cell-sub" style={{ marginTop: 10 }}>
-                Latest status per node, {scopeNote.level}
-                {scopeNote.noHistory > 0
-                  ? ` · ${scopeNote.noHistory} of ${scopeNote.total} nodes have no status history and are counted as Yet to Start`
-                  : ''}
-              </p>
-            ) : null}
+            {/* Sub-note removed by request. NOTE: it was the only place stating that
+                nodes with no status history are counted as Yet to Start. */}
           </div>
         </div>
       </div>
