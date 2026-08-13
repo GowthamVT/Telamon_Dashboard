@@ -532,13 +532,19 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       <MonitorHeader
         eyebrow="SITE COMPLETION MONITOR"
         title={siteName.toUpperCase()}
+        /*
+          One node: the start date alone. The company and the node status were removed
+          by request -- the company is already in the picker above, and the status
+          duplicated what the cards below report.
+
+          The pooled case keeps its own line: with no single node to date, the count and
+          the "pooled across all of them" caveat are the only things that describe it.
+        */
         subtitle={
-          live?.site
-            ? isAggregate
-              ? `${live.nodeCount} sites · ${
-                  live.site.companyName || `${live.site.companyCount} companies`
-                } · figures below are pooled across all of them`
-              : `Started ${startDate} · ${live.site.companyName} · node status ${live.site.workStatus}`
+          live?.site && isAggregate
+            ? `${live.nodeCount} sites · ${
+                live.site.companyName || `${live.site.companyCount} companies`
+              } · figures below are pooled across all of them`
             : `Started ${startDate}`
         }
       />
