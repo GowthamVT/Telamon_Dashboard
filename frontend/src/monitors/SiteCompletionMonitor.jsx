@@ -317,31 +317,37 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     if (!liveMs) return { pct: 0, color: '#5A6478', label: '--', note: null };
 
     /*
-     * APPROVED MEDIA / TOTAL MEDIA -- the portal's pair, and the same percentage the
-     * Route Monitor's PHOTOS column shows. Upton: 12/35 = 34%.
+     * PHOTOS UPLOADED = photo fields with media / photo fields that apply.
+     * Boligee reads 326/380 = 86%, and the bar fills to 86%.
      *
-     * The numerator and denominator here must be the two the percentage was computed
-     * from, or the line contradicts itself: showing "13/159 - 34%" would be worse
-     * than either figure alone.
+     * THE PAIR AND THE PERCENTAGE MUST COME FROM ONE SOURCE. This line read
+     * "326/380 · 0%" once, with an empty bar: the counts were coverage while the
+     * percentage came from a field the server had stopped sending, silently defaulted
+     * to 0 by `?? 0`. Both now derive from coveragePct, and anything missing yields
+     * "--" for the whole line rather than a 0% that contradicts the numbers beside it.
+     *
+     * The media-approval figure (48/709 = 7% here) is deliberately NOT shown: it was
+     * a second percentage on the same line answering a different question, and it read
+     * as the bar being nearly empty on a node that is 86% covered. Approved, rejected
+     * and ignored media are still listed in the Node Media strip below.
      */
-    const approved = liveMs.approvedMedia;
-    const media = liveMs.photos;
-    if (media === null || media === undefined || approved === null || approved === undefined) {
+    const covered = liveMs.fieldsCovered;
+    const applicable = liveMs.coverageDenominator ?? liveMs.photoFields;
+    const pct = liveMs.coveragePct;
+    if (
+      pct === null ||
+      pct === undefined ||
+      covered === null ||
+      covered === undefined ||
+      !applicable
+    ) {
       return { pct: 0, color: '#5A6478', label: '--', note: null };
     }
-    const pct = liveMs.mediaApprovedPct ?? 0;
     return {
       pct,
       color: pctColor(pct),
-      label: `${approved}/${media} · ${pct}%`,
-      /*
-       * Field coverage is a different question and is no longer the headline, so it
-       * sits underneath rather than disappearing.
-       */
-      note:
-        liveMs.coveragePct === null || liveMs.coveragePct === undefined
-          ? null
-          : `${liveMs.fieldsCovered} of ${liveMs.coverageDenominator ?? liveMs.photoFields} photo fields have media (${liveMs.coveragePct}%)`,
+      label: `${covered}/${applicable} · ${pct}%`,
+      note: null,
     };
   }, [live, liveMs, data.photos, overallStatus]);
 
@@ -694,7 +700,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         <div className="mon-pr">
           <div className="mon-pr-main">
             <div className="mon-pr-head">
-              <span className="mon-pr-caption">Media approved</span>
+              <span className="mon-pr-caption">Photos uploaded</span>
               <span className="mon-pr-value" style={{ color: photoBar.color }}>
                 {photoBar.label}
               </span>
