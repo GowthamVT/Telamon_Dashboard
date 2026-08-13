@@ -80,7 +80,21 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
 
   if (collection === 'FormBuilderQuestions') {
     const dailyForms = pipeline.some((s) => s.$match && s.$match.formName);
-    if (dailyForms) return { rows: [{ _id: null, ids: ['daily-form'] }], rowCount: 1, elapsedMs: 1 };
+    if (dailyForms) {
+      /*
+       * TWO daily-report forms on the node, one named exactly and one not. The exact one
+       * must win outright -- DEFUNIAK SPRINGS carries a pair differing only in case, each
+       * with 8 answer sets, and the portal counts 8 rather than 16.
+       */
+      return {
+        rows: [
+          { nodeId: NODE_ID, formId: 'daily-form', formName: 'DAILY REPORT FORM' },
+          { nodeId: NODE_ID, formId: 'daily-form-360', formName: 'INTEGRATION DAILY REPORT FORM-360' },
+        ],
+        rowCount: 2,
+        elapsedMs: 1,
+      };
+    }
     const grouped = pipeline.some((s) => s.$group && s.$group.photoFields);
     if (grouped) return { rows: [{ _id: NODE_ID, photoFields: 10, formIds: ['form-1'] }], rowCount: 1, elapsedMs: 1 };
     return {
@@ -117,9 +131,23 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
   }
 
   if (collection === 'FormBuilderAnswers') {
-    const byForm = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.formId);
-    if (byForm) return { rows: [], rowCount: 0, elapsedMs: 1 };
-    return { rows: [{ _id: NODE_ID, reports: 5, reportDays: 4, firstDay: '2026-07-01', lastDay: '2026-07-10' }], rowCount: 1, elapsedMs: 1 };
+    const byDay = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.day);
+    if (!byDay) return { rows: [], rowCount: 0, elapsedMs: 1 };
+    /*
+     * 5 submissions over 4 days on the exactly-named form, plus 3 on the -360 form that
+     * MUST be ignored. If the per-node preference regresses, reports reads 8.
+     */
+    return {
+      rows: [
+        { _id: { nodeId: NODE_ID, formId: 'daily-form', day: '2026-07-01' }, subs: ['a', 'b'] },
+        { _id: { nodeId: NODE_ID, formId: 'daily-form', day: '2026-07-02' }, subs: ['c'] },
+        { _id: { nodeId: NODE_ID, formId: 'daily-form', day: '2026-07-03' }, subs: ['d'] },
+        { _id: { nodeId: NODE_ID, formId: 'daily-form', day: '2026-07-10' }, subs: ['e'] },
+        { _id: { nodeId: NODE_ID, formId: 'daily-form-360', day: '2026-07-04' }, subs: ['x', 'y', 'z'] },
+      ],
+      rowCount: 5,
+      elapsedMs: 1,
+    };
   }
 
   if (collection === 'S3Document') {
@@ -599,6 +627,25 @@ test('item-level N/A is not inferred from wording', async () => {
     'complete',
     'evidence always wins'
   );
+});
+
+test('daily reports count ONE form per node, the exactly-named one', async () => {
+  /*
+   * A /DAILY REPORT/i sweep summed every variant and overstated most nodes. The portal
+   * counts the exactly-named form alone:
+   *
+   *   DEFUNIAK SPRINGS   DAILY REPORT FORM 8 · Daily Report form 8 · INTEGRATION 5 -> 8
+   *   PASS CHRISTIAN     DAILY REPORT FORM 16 · INTEGRATION 1                      -> 16
+   *
+   * Stub: 5 submissions over 4 days on 'DAILY REPORT FORM', plus 3 on the -360 form.
+   * A regression to the old sweep reads 8.
+   */
+  const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
+  const m = body.metrics;
+
+  assert.equal(m.reports, 5, 'the -360 form must not be added in');
+  assert.equal(m.reportDays, 4, 'distinct days, so two submissions in one day count once');
+  assert.equal(m.lastReport, '2026-07-10');
 });
 
 test('missed days come from weekdays in the observed window', async () => {

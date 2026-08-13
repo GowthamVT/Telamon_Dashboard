@@ -778,51 +778,120 @@ async function getNodeMetrics(scope = {}) {
     }
 
     /* ---- 6. daily reports ----
-     * Forms identified by NAME in the definitions, deliberately not via the
-     * node's checklist: the DAILY REPORT FORM is frequently absent from it.
-     * Alexander City has 19 submissions but a checklist containing only
-     * COP-Documents and the tracker, so the checklist route reported 0. */
+     *
+     * Forms identified by NAME in the definitions, deliberately not via the node's
+     * checklist: the DAILY REPORT FORM is frequently absent from it. Alexander City has
+     * 23 submissions but a checklist containing only COP-Documents and the tracker, so
+     * the checklist route reported 0.
+     *
+     * ONE FORM PER NODE, chosen per node. A /DAILY REPORT/i sweep summed every variant
+     * and overstated most nodes, because a node commonly carries several:
+     *
+     *   DEFUNIAK SPRINGS   DAILY REPORT FORM 8 · Daily Report form 8 · INTEGRATION 5
+     *   PASS CHRISTIAN     DAILY REPORT FORM 16 · INTEGRATION 1
+     *
+     * The portal reports 8 and 16 -- the exactly-named form alone. Note DEFUNIAK carries
+     * two forms differing ONLY in case, each with 8 answer sets, and the portal counts
+     * one: case is significant here, however uncomfortable that is.
+     *
+     * So: prefer forms named exactly 'DAILY REPORT FORM'; if a node has none, fall back
+     * to whatever daily-report form it does have. Six Telamon nodes are in that state and
+     * would otherwise read 0 while holding real submissions -- VANCLEAVE has 15 on
+     * 'Daily Report form', REPUBLIC-SERVICES-HQ 1 on 'Daily Report', two HD nodes use
+     * 'DAILY REPORT FORM-360'. Reporting 0 there would be a worse error than the
+     * overcount this replaces.
+     *
+     * Verified against every portal figure supplied: DEFUNIAK 8, PASS CHRISTIAN 16,
+     * Basile 13, Wadley 31.
+     */
+    const DAILY_REPORT_FORM = 'DAILY REPORT FORM';
+
     const { rows: dailyForms } = await mongo.aggregate(
       'FormBuilderQuestions',
       [
-        { $match: { formName: { $regex: 'DAILY REPORT', $options: 'i' }, isDeleted: { $ne: true } } },
-        { $group: { _id: null, ids: { $addToSet: { $toString: '$_id' } } } },
+        {
+          $match: {
+            nodeIdList: { $in: nodeIds },
+            formName: { $regex: 'DAILY REPORT', $options: 'i' },
+            isDeleted: { $ne: true },
+          },
+        },
+        { $unwind: '$nodeIdList' },
+        { $match: { nodeIdList: { $in: nodeIds } } },
+        { $project: { _id: 0, nodeId: '$nodeIdList', formId: { $toString: '$_id' }, formName: 1 } },
       ],
       { label: 'mongo-metrics-daily-forms' }
     );
-    const dailyFormIds = dailyForms.length ? dailyForms[0].ids : [];
+
+    /* Per node: the exactly-named form's ids, or every daily-report form it has. */
+    const dailyFormsByNode = new Map();
+    for (const f of dailyForms) {
+      if (!dailyFormsByNode.has(f.nodeId)) dailyFormsByNode.set(f.nodeId, { exact: [], other: [] });
+      const bucket = dailyFormsByNode.get(f.nodeId);
+      if (f.formName === DAILY_REPORT_FORM) bucket.exact.push(f.formId);
+      else bucket.other.push(f.formId);
+    }
+    const chosenByNode = new Map();
+    for (const [nodeId, bucket] of dailyFormsByNode) {
+      const ids = bucket.exact.length ? bucket.exact : bucket.other;
+      if (ids.length) chosenByNode.set(nodeId, new Set(ids));
+    }
 
     const reportsByNode = new Map();
-    if (dailyFormIds.length) {
+    const allFormIds = [...new Set(dailyForms.map((f) => f.formId))];
+    if (allFormIds.length) {
+      /*
+       * Grouped by node AND form, then filtered in JS against that node's chosen set.
+       * A form's nodeIdList can hold several nodes, so a formId chosen for one node is
+       * not necessarily chosen for another -- filtering inside the pipeline would have to
+       * encode the per-node decision, which is what this avoids.
+       */
       const { rows } = await mongo.aggregate(
         'FormBuilderAnswers',
         [
-          { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: dailyFormIds } } },
+          { $match: { nodeIdList: { $in: nodeIds }, formId: { $in: allFormIds } } },
           { $unwind: '$nodeIdList' },
           { $match: { nodeIdList: { $in: nodeIds }, isDeleted: { $ne: true } } },
           {
-            // Per node per DAY, so submissions and distinct days both come out.
+            // Per node per form per DAY, so submissions and distinct days both come out.
             $group: {
               _id: {
                 nodeId: '$nodeIdList',
+                formId: '$formId',
                 day: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
               },
               subs: { $addToSet: '$answerSetId' },
             },
           },
-          {
-            $group: {
-              _id: '$_id.nodeId',
-              reports: { $sum: { $size: '$subs' } },
-              reportDays: { $sum: 1 },
-              firstDay: { $min: '$_id.day' },
-              lastDay: { $max: '$_id.day' },
-            },
-          },
         ],
         { label: 'mongo-metrics-reports' }
       );
-      rows.forEach((r) => reportsByNode.set(r._id, r));
+
+      const acc = new Map();
+      for (const r of rows) {
+        const { nodeId, formId, day } = r._id;
+        const chosen = chosenByNode.get(nodeId);
+        if (!chosen || !chosen.has(formId)) continue;
+        if (!acc.has(nodeId)) {
+          acc.set(nodeId, { reports: 0, days: new Set(), first: null, last: null });
+        }
+        const a = acc.get(nodeId);
+        a.reports += (r.subs || []).length;
+        if (day) {
+          a.days.add(day);
+          if (!a.first || day < a.first) a.first = day;
+          if (!a.last || day > a.last) a.last = day;
+        }
+      }
+      for (const [nodeId, a] of acc) {
+        reportsByNode.set(nodeId, {
+          _id: nodeId,
+          reports: a.reports,
+          reportDays: a.days.size,
+          firstDay: a.first,
+          lastDay: a.last,
+        });
+      }
     }
 
     /* ---- 7. assemble ---- */
