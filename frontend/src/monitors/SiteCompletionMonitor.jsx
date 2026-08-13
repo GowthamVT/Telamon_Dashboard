@@ -645,13 +645,16 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 );
               })}
             </div>
-            {/* One line, in place of four "--" bars with nothing to explain them.
-                Shown only when NO milestone has a figure -- a node part-way through
-                still shows its bars rather than being written off as unconfigured. */}
-            {milestoneView && milestoneView.measurable.length === 0 ? (
-              <p className="mon-cell-sub" style={{ marginTop: 12 }}>
-                Milestone is yet to be configured for this site
-              </p>
+            {/*
+              Shown only when the table below has NO records -- the same condition, so
+              the card and the table never disagree about whether this site has a
+              tracker.
+              Deliberately NOT keyed on "no milestone has a percentage": a node whose
+              only tasks are unmilestoned would show four "--" bars while the table
+              lists rows, and calling that unconfigured would contradict the list.
+            */}
+            {checklist && checklist.length === 0 ? (
+              <p className="mon-miles-empty">Milestone is yet to be configured for this site</p>
             ) : null}
           </div>
         </div>
