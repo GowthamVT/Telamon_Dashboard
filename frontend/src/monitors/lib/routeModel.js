@@ -156,25 +156,25 @@ export function rowsFromNodes(nodes = []) {
       stagePhotos: m ? m.stagePhotos : null,
 
       /**
-       * PHOTOS column = photo fields WITH MEDIA / photo fields that APPLY.
+       * PHOTOS column = (all photo fields - fields without media) / all photo fields.
        *
-       * The same rule as the Site Monitor's "Photos uploaded" bar, so the two tabs
-       * report one number for one node: Boligee is 326/380 = 86% in both.
+       * The client's formula, given against Eureka: (150 fields + 18 N/A - 112 without
+       * media) / (150 + 18) = 56/168 = 33%. Both figures come from the backend, and the
+       * Site Monitor's "Photos uploaded" bar reads the same two, so one node cannot show
+       * two numbers across the tabs.
        *
-       * It briefly showed approved media over total media (48/709 = 7% here). That is
-       * a reviewer sign-off rate, not upload progress, and it read as an almost-empty
-       * bar on a node whose photolist is 86% covered. The approval figures are still
-       * in the Site Monitor's Node Media strip and in this cell's tooltip.
+       * The numerator counts N/A and Not Required fields as satisfied -- nobody has to
+       * photograph them -- which is why it can exceed the count of fields with media.
        *
-       * Not photos/fields either: a field takes many photos, so that ratio can exceed
-       * 100% (554 photos across 154 fields = 360%).
+       * Not photos/fields: a field takes many photos, so that ratio can exceed 100%
+       * (554 photos across 154 fields = 360%).
        *
-       * The denominator excludes fields the app marks N/A -- the same denominator the
-       * Site Monitor uses -- because a field nobody has to photograph is not
-       * outstanding work.
+       * Approved media over total media (48/709 = 7% on Boligee) was the headline here
+       * briefly. That is a reviewer sign-off rate rather than upload progress; it stays
+       * in this cell's tooltip and in the Site Monitor's Node Media strip.
        */
-      photosUploaded: m ? m.fieldsCovered : null,
-      photosTotal: m ? (m.coverageDenominator ?? m.photoFields) : null,
+      photosUploaded: m ? m.fieldsSettled : null,
+      photosTotal: m ? m.fieldsAll : null,
       photosPct: m ? m.coveragePct : null,
 
       /** Media approval, kept for the tooltip: it is a different question. */

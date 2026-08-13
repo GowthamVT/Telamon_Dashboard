@@ -355,8 +355,21 @@ function poolMetrics(byNode) {
     notRequiredFields: sum('notRequiredFields'),
     incompleteFields: sum('incompleteFields'),
     coverageDenominator: denominator,
+    /*
+     * PHOTOS UPLOADED, pooled: (all fields - fields without media) / all fields.
+     *
+     * Summed then divided, never a mean of per-node percentages -- a node with 3 fields
+     * would otherwise weigh the same as one with 380.
+     */
+    fieldsAll: sum('fieldsAll'),
+    fieldsSettled: sum('fieldsSettled'),
     coveragePct:
-      denominator > 0 ? Math.min(100, Math.round((fieldsCovered / denominator) * 100)) : null,
+      sum('fieldsAll') > 0
+        ? Math.min(
+            100,
+            Math.round(((sum('fieldsAll') - sum('incompleteFields')) / sum('fieldsAll')) * 100)
+          )
+        : null,
     /*
      * Pooled from the TOTALS, not averaged: a node with 3 media weighs 3, not the
      * same as one with 700. Null when the scope holds no media at all, so "nothing

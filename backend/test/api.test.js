@@ -106,9 +106,8 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
     const byForm = pipeline.some((s) => s.$group && s.$group._id && s.$group._id.formId);
     if (byForm) return { rows: [{ _id: { nodeId: NODE_ID, formId: 'form-1' }, photos: 4, fieldsCovered: 3, lastPhoto: '2026-08-01' }], rowCount: 1, elapsedMs: 1 };
     /*
-     * 4 media, 1 approved -> the headline PHOTOS figure is 1/4 = 25%, while field
-     * coverage stays 3 of 7 = 43%. Deliberately different numbers, so a test cannot
-     * pass by confusing the two.
+     * 4 media, 1 approved -> approval is 1/4 = 25%, while PHOTOS UPLOADED is 6/10 = 60%.
+     * Deliberately different numbers, so a test cannot pass by confusing the two.
      */
     return {
       rows: [{ _id: NODE_ID, photosAll: 4, fieldsCovered: 3, photos: 4, approvedMedia: 1, rejectedMedia: 0, ignoredMedia: 0 }],
@@ -140,13 +139,17 @@ mongo.aggregate = async (collection, pipeline, opts = {}) => {
 
   if (collection === 'ProgressStats') {
     /*
-     * 10 ProgressStats documents: 2 N/A, so 8 APPLICABLE fields -- which is what the
-     * portal calls "Total Fields Count". Of those 8: 3 completed, 1 Not Required,
-     * 4 without media. Coverage excludes both N/A and Not Required, so 3 of 7.
+     * 10 ProgressStats rows: 2 N/A, so 8 APPLICABLE fields -- the portal's "Total
+     * Fields Count", with "Not Applicable" reported beside it. Of those 8: 3 completed,
+     * 1 Not Required, 4 without media.
+     *
+     * PHOTOS UPLOADED is (10 - 4) / 10 = 60%: every row counts in the denominator, and
+     * the numerator is everything not waiting on a photo (2 N/A + 3 done + 1 not
+     * required).
      *
      * `completedApplicable` and `incomplete` are already N/A-excluded, matching the
-     * aggregation, because the portal counts neither an N/A field's completion nor
-     * an N/A field's missing media.
+     * aggregation, because the portal counts neither an N/A field's completion nor an
+     * N/A field's missing media.
      */
     return {
       rows: [
@@ -367,27 +370,37 @@ test('GET /api/monitor/route attaches metrics to each row', async () => {
   assert.ok('metrics' in body.nodes[0]);
 });
 
-test('coverage excludes BOTH N/A and Not Required from the denominator', async () => {
+test('PHOTOS UPLOADED = (all fields - fields without media) / all fields', async () => {
   const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
   const m = body.metrics;
 
   /*
-   * This mirrors the portal's own arithmetic, which is where the rule came from:
-   * on Basile it reports 165 fields and 149 "without media", and 165 - 149 = 16
-   * = Completed (11) + Not Required (5). Neither an N/A nor a Not Required field
-   * is outstanding work, so neither belongs in the denominator.
+   * The client's formula, given against Eureka:
    *
-   * Stub: 10 fields, 3 done, 2 N/A, 1 Not Required -> 3 of 7 = 43%.
-   * Excluding only N/A would give 3 of 8 = 38%; excluding neither, 3 of 10 = 30%.
+   *     A = Total Fields Count + Not Applicable   150 + 18 = 168
+   *     B = Total Fields without Media                      112
+   *     pct = (A - B) / A                          56 / 168 = 33%
+   *
+   * A is every ProgressStats row, so an N/A field sits in the DENOMINATOR and its
+   * satisfaction sits in the numerator -- nobody has to photograph it.
+   *
+   * Stub: 10 fields, 2 N/A, 1 Not Required, 4 without media, 3 completed.
+   *   settled = 10 - 4 = 6, which decomposes as 2 N/A + 3 completed + 1 not required
+   *   pct     = 6/10 = 60%
+   *
+   * The retired reading was completed/(applicable - not required) = 3/7 = 43%. Both are
+   * defensible; only one is asked for, and it is now the only one shown on either tab.
    */
-  assert.equal(m.fieldsCovered, 3);
-  assert.equal(m.naFields, 2);
-  assert.equal(m.notRequiredFields, 1);
-  assert.equal(m.coverageDenominator, 7, 'both N/A and Not Required must be excluded');
-  assert.equal(m.coveragePct, 43);
+  assert.equal(m.fieldsAll, 10, 'denominator includes N/A');
+  assert.equal(m.incompleteFields, 4, "the portal's Total Fields without Media");
+  assert.equal(m.fieldsSettled, 6);
+  assert.equal(m.coveragePct, 60);
+  assert.equal(
+    m.fieldsSettled,
+    m.naFields + m.fieldsCovered + m.notRequiredFields,
+    'the numerator must account for exactly the fields needing no photo'
+  );
   assert.equal(m.photoPctApproximate, false);
-  // incompleteFields is the portal's "Total Fields without Media".
-  assert.equal(m.incompleteFields, 4);
   assert.ok(executed.some((e) => e.collection === 'ProgressStats'));
 });
 
@@ -487,22 +500,23 @@ test('UPLOADED % reproduces the portal, to one decimal place', () => {
   assert.equal(documentUsagePct({ uploaded: 5, limit: 0 }), null);
 });
 
-test('PHOTOS is approved media over total media, not field coverage', async () => {
+test('media approval is still computed, distinct from PHOTOS UPLOADED', async () => {
   /*
    * Upton is the case: its Node Media header reads "Total Approved Media 12" and
    * "Total Media Count 35", and the portal's figure is 12/35 = 34%. The dashboard
    * used to show field coverage there -- 13/159 = 8% -- which is a different
    * question and a very different number.
    *
-   * Field coverage is still reported as coveragePct, for the tooltip.
+   * PHOTOS UPLOADED is a different figure again -- see its own test -- and approval
+   * lives on in the row tooltip and the Node Media strip.
    */
   const { body } = await request(`/api/monitor/site?nodeId=${NODE_ID}`);
   const m = body.metrics;
 
   assert.equal(m.approvedMedia, 1);
   assert.equal(m.photos, 4);
-  assert.equal(m.mediaApprovedPct, 25, 'headline = approved / total media');
-  assert.equal(m.coveragePct, 43, 'field coverage survives, separately');
+  assert.equal(m.mediaApprovedPct, 25, 'approved / total media, still computed');
+  assert.equal(m.coveragePct, 60, 'PHOTOS UPLOADED is a different figure -- 6/10, not 1/4');
 });
 
 test('media approval is null, not 0, when a node has no media', async () => {

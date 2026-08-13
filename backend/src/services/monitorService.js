@@ -880,6 +880,13 @@ async function getNodeMetrics(scope = {}) {
         : photoFields;
 
       /*
+       * Every photo field including N/A -- the portal's "Total Fields Count" plus its
+       * "Not Applicable", which is exactly the ProgressStats row count. Falls back to
+       * the photolist definition on nodes with no ProgressStats documents.
+       */
+      const fieldsAll = exactCoverage ? Number(cov.fields) || 0 : photoFields;
+
+      /*
        * Denominator = done + still outstanding, matching the portal's arithmetic.
        *
        * Basile: the portal reports 165 fields and 149 "without media", and
@@ -988,14 +995,32 @@ async function getNodeMetrics(scope = {}) {
         incompleteFields,
         coverageDenominator,
         /**
-         * FIELD COVERAGE: photo fields that have media, over applicable fields.
+         * PHOTOS UPLOADED -- the client's own formula, given against Eureka:
          *
-         * No longer the headline figure -- see mediaApprovedPct -- but kept, because
-         * it answers a different and useful question and the tooltip shows it.
+         *     A = Total Fields Count + Not Applicable   150 + 18 = 168
+         *     B = Total Fields without Media                      112
+         *     pct = (A - B) / A                          56 / 168 = 33%
+         *
+         * A is every ProgressStats row for the node, so `fieldsAll` below is simply
+         * that raw count -- the portal splits it into "Fields" and "Not Applicable",
+         * and adding them back together recovers it.
+         *
+         * WHAT THE NUMERATOR MEANS: A - B is every field NOT waiting on a photo. It
+         * therefore counts an N/A field and a Not Required field as satisfied, which is
+         * the point -- nobody has to photograph them. Eureka decomposes as
+         * 18 N/A + 34 completed + 4 not required = 56.
+         *
+         * This replaced completed/(applicable - not required), which read 34/146 = 23%
+         * on the same node. That figure answered "how much of the outstanding work has
+         * a photo"; this one answers "how much of the photolist needs no further
+         * action". Both are defensible; this is the one asked for, and it is the only
+         * one now shown, on both tabs.
          */
+        fieldsAll,
+        fieldsSettled: fieldsAll > 0 ? Math.max(fieldsAll - incompleteFields, 0) : 0,
         coveragePct:
-          coverageDenominator > 0
-            ? Math.min(100, Math.round((fieldsCovered / coverageDenominator) * 100))
+          fieldsAll > 0
+            ? Math.min(100, Math.round(((fieldsAll - incompleteFields) / fieldsAll) * 100))
             : null,
         /**
          * MEDIA APPROVED: approved media over total media. The portal's own pair.

@@ -259,9 +259,9 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 title={
                   site.photoCount === null
                     ? undefined
-                    : `${site.photosUploaded} of ${site.photosTotal} photo fields have media` +
+                    : `${site.photosUploaded} of ${site.photosTotal} photo fields need no photo` +
                       (site.naFields
-                        ? ` (${site.naFields} of ${site.photoFieldsDefined} marked N/A and excluded).`
+                        ? ` (${site.naFields} of them marked N/A, which count as satisfied).`
                         : '.') +
                       ` ${site.photoCount} photos in total, ${site.approvedMedia} approved` +
                       (site.mediaApprovedPct === null ? '.' : ` (${site.mediaApprovedPct}%).`) +

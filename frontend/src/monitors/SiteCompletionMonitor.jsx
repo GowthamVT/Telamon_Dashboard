@@ -302,36 +302,34 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     if (!liveMs) return { pct: 0, color: '#5A6478', label: '--', note: null };
 
     /*
-     * PHOTOS UPLOADED = photo fields with media / photo fields that apply.
-     * Boligee reads 326/380 = 86%, and the bar fills to 86%.
+     * PHOTOS UPLOADED = (all photo fields - fields without media) / all photo fields.
+     *
+     * The client's formula, given against Eureka: (150 fields + 18 N/A - 112 without
+     * media) / (150 + 18) = 56/168 = 33%. Boligee reads 326/380 = 86%, unchanged,
+     * because it has no N/A and no Not Required fields for the formula to treat
+     * differently. Both come from the backend so this tab and the Route Monitor cannot
+     * diverge.
      *
      * THE PAIR AND THE PERCENTAGE MUST COME FROM ONE SOURCE. This line read
      * "326/380 · 0%" once, with an empty bar: the counts were coverage while the
      * percentage came from a field the server had stopped sending, silently defaulted
-     * to 0 by `?? 0`. Both now derive from coveragePct, and anything missing yields
-     * "--" for the whole line rather than a 0% that contradicts the numbers beside it.
+     * to 0 by `?? 0`. Anything missing now yields "--" for the whole line rather than a
+     * 0% that contradicts the numbers beside it.
      *
-     * The media-approval figure (48/709 = 7% here) is deliberately NOT shown: it was
-     * a second percentage on the same line answering a different question, and it read
-     * as the bar being nearly empty on a node that is 86% covered. Approved, rejected
-     * and ignored media are still listed in the Node Media strip below.
+     * The media-approval figure (48/709 = 7% on Boligee) is deliberately NOT shown: it
+     * was a second percentage on the same line answering a different question. Approved,
+     * rejected and ignored media are still listed in the Node Media strip below.
      */
-    const covered = liveMs.fieldsCovered;
-    const applicable = liveMs.coverageDenominator ?? liveMs.photoFields;
+    const settled = liveMs.fieldsSettled;
+    const all = liveMs.fieldsAll;
     const pct = liveMs.coveragePct;
-    if (
-      pct === null ||
-      pct === undefined ||
-      covered === null ||
-      covered === undefined ||
-      !applicable
-    ) {
+    if (pct === null || pct === undefined || settled === null || settled === undefined || !all) {
       return { pct: 0, color: '#5A6478', label: '--', note: null };
     }
     return {
       pct,
       color: pctColor(pct),
-      label: `${covered}/${applicable} · ${pct}%`,
+      label: `${settled}/${all} · ${pct}%`,
       note: null,
     };
   }, [live, liveMs, data.photos, overallStatus]);
