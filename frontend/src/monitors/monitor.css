@@ -98,10 +98,6 @@
   --mon-pill-bg: #dcf3e8;
   --mon-pill-border: #9bd8be;
 
-  /* The theme switch */
-  --mon-sw-track: linear-gradient(180deg, #fdf1dc 0%, #f6e2c0 100%);
-  --mon-sw-knob: #f5b133;
-  --mon-sw-knob-ink: #4a2c02;
 
   /*
    * Gotham Rounded first, then the platform UI face. The fallbacks are all
@@ -146,9 +142,6 @@
     --mon-pill-bg: #1c3b31;
     --mon-pill-border: #2c6e56;
 
-    --mon-sw-track: linear-gradient(180deg, #131a2a 0%, #0b1220 100%);
-    --mon-sw-knob: #8fb2ff;
-    --mon-sw-knob-ink: #10203c;
   }
 }
 
@@ -181,9 +174,6 @@
   --mon-pill-bg: #1c3b31;
   --mon-pill-border: #2c6e56;
 
-  --mon-sw-track: linear-gradient(180deg, #131a2a 0%, #0b1220 100%);
-  --mon-sw-knob: #8fb2ff;
-  --mon-sw-knob-ink: #10203c;
 }
 
 .mon-root *,
@@ -1171,129 +1161,80 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------------- Theme switch ----------------
-   Sun and moon in one track, sitting under the SYNCED stamp. No glow, by
-   request. State is carried by the knob position AND the icon shape, so it does
-   not depend on colour perception. */
-.mon-themeswitch {
-  position: relative;
+/* ---------------- Theme control ----------------
+   A two-option segmented control, the pattern business dashboards already use for
+   this: flat surfaces, one hairline border, the selected side filled. No gradient,
+   no glow, no sliding knob -- the previous knob had to be positioned against the
+   track by hand and drifted out of alignment.
+
+   Icons are centred by grid rather than by offsets, so they cannot drift. Selection
+   is carried by aria-pressed, which means the styling follows the control's own
+   state instead of duplicating the theme rules. */
+.mon-theme {
   display: inline-flex;
   align-items: center;
-  width: 58px;
-  height: 28px;
-  flex: none;
-  padding: 0;
+  gap: 9px;
+}
+
+.mon-theme-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--mon-muted);
+  white-space: nowrap;
+}
+
+.mon-theme-seg {
+  display: inline-flex;
   border: 1px solid var(--mon-border);
-  border-radius: 999px;
-  background: var(--mon-sw-track);
-  cursor: pointer;
-  transition: background 200ms ease, border-color 200ms ease;
-}
-.mon-themeswitch:hover {
-  border-color: var(--mon-text-3);
-}
-.mon-themeswitch:focus-visible {
-  outline: 2px solid var(--mon-notstarted);
-  outline-offset: 2px;
+  border-radius: 7px;
+  background: var(--mon-card);
+  overflow: hidden;
 }
 
-/* The state you would switch TO, dimmed on the far side of the track. */
-.mon-sw-hint {
-  position: absolute;
-  top: 50%;
-  width: 12px;
-  height: 12px;
-  margin-top: -6px;
-  opacity: 0.45;
-  pointer-events: none;
-  transition: opacity 200ms ease;
-}
-.mon-sw-hint svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.mon-sw-hint--sun {
-  left: 7px;
-  color: #a4630c;
-  opacity: 0;
-}
-.mon-sw-hint--moon {
-  right: 7px;
-  color: #6d7889;
-}
-
-.mon-sw-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
+.mon-theme-opt {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--mon-sw-knob);
-  transition: transform 220ms ease, background 200ms ease;
+  width: 32px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--mon-text-3);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
 }
-.mon-sw-knob svg {
-  position: absolute;
-  width: 13px;
-  height: 13px;
-  color: var(--mon-sw-knob-ink);
-  transition: opacity 160ms ease;
+.mon-theme-opt + .mon-theme-opt {
+  border-left: 1px solid var(--mon-border);
 }
-.mon-sw-knob .mon-i-moon {
-  opacity: 0;
+.mon-theme-opt svg {
+  display: block;
+  width: 14px;
+  height: 14px;
 }
-
-/* Dark: knob to the right, moon showing, sun offered as the hint. */
-.mon-root[data-mon-theme='dark'] .mon-sw-knob {
-  transform: translateX(28px);
+.mon-theme-opt:hover {
+  color: var(--mon-text);
 }
-.mon-root[data-mon-theme='dark'] .mon-sw-knob .mon-i-sun {
-  opacity: 0;
+.mon-theme-opt[aria-pressed='true'] {
+  background: var(--mon-chip-bg);
+  color: var(--mon-text-bright);
 }
-.mon-root[data-mon-theme='dark'] .mon-sw-knob .mon-i-moon {
-  opacity: 1;
-}
-.mon-root[data-mon-theme='dark'] .mon-sw-hint--sun {
-  opacity: 0.45;
-}
-.mon-root[data-mon-theme='dark'] .mon-sw-hint--moon {
-  opacity: 0;
-}
-
-@media (prefers-color-scheme: dark) {
-  .mon-root:not([data-mon-theme='light']) .mon-sw-knob {
-    transform: translateX(28px);
-  }
-  .mon-root:not([data-mon-theme='light']) .mon-sw-knob .mon-i-sun {
-    opacity: 0;
-  }
-  .mon-root:not([data-mon-theme='light']) .mon-sw-knob .mon-i-moon {
-    opacity: 1;
-  }
-  .mon-root:not([data-mon-theme='light']) .mon-sw-hint--sun {
-    opacity: 0.45;
-  }
-  .mon-root:not([data-mon-theme='light']) .mon-sw-hint--moon {
-    opacity: 0;
-  }
+.mon-theme-opt:focus-visible {
+  outline: 2px solid var(--mon-notstarted);
+  outline-offset: -2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mon-themeswitch,
-  .mon-sw-knob,
-  .mon-sw-knob svg,
-  .mon-sw-hint {
+  .mon-theme-opt {
     transition: none;
   }
 }
 
-/* The sync block becomes a column so the switch sits directly beneath it. */
+/* The header's right column: theme control on top, SYNCED beneath it. */
 .mon-sync-group {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 10px;
+  gap: 9px;
 }

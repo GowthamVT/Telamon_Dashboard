@@ -11,7 +11,7 @@ import { EMPTY_TRACK, litBars, nowStamp, statusColor, statusTint } from '../lib/
 /* ---------------- Theme switch ---------------- */
 
 const SunIcon = () => (
-  <svg className="mon-i-sun" viewBox="0 0 24 24" aria-hidden="true">
+  <svg viewBox="0 0 24 24" aria-hidden="true">
     <circle cx="12" cy="12" r="4.6" fill="currentColor" />
     <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <line x1="12" y1="1.4" x2="12" y2="4" />
@@ -27,71 +27,76 @@ const SunIcon = () => (
 );
 
 const MoonIcon = () => (
-  <svg className="mon-i-moon" viewBox="0 0 24 24" aria-hidden="true">
+  <svg viewBox="0 0 24 24" aria-hidden="true">
     <path fill="currentColor" d="M20.3 15A8.6 8.6 0 0 1 9 3.7a9 9 0 1 0 11.3 11.3z" />
   </svg>
 );
 
 /**
- * Light/dark switch for the monitor.
+ * Theme control for the monitor: light or dark, as a segmented pair.
  *
  * Writes `data-mon-theme` onto the .mon-root element, which is where the palette
  * tokens live. Deliberately NOT on <html>: the monitor is embedded in a
- * cross-origin iframe alongside a separate light-themed dashboard, and stamping
- * the document root would reach outside this component's own styles.
+ * cross-origin iframe alongside a separate light-themed dashboard, and stamping the
+ * document root would reach outside this component's own styles.
  *
  * NOT PERSISTED, and that is deliberate. localStorage is partitioned or blocked
  * outright in a third-party iframe, so a saved choice would apply for some viewers
  * and silently vanish for others. The initial state follows the operating system,
  * which needs no storage and is right more often than a remembered guess.
  *
- * Colour is not the only signal: the knob moves and the icon changes shape.
+ * Two buttons rather than one toggle: each side states which theme it selects, so
+ * the control never has to be read as "what does pressing this do?". Selection is
+ * shown by fill and by ink, not by colour hue alone.
  */
 export function ThemeSwitch() {
-  const [mode, setMode] = useState(null);
+  /* Dark to begin with -- the dashboard's long-standing look -- so neither side is
+     ever momentarily unselected before the effect below reads the OS. */
+  const [mode, setMode] = useState('dark');
 
-  // Read the OS preference on mount rather than during render -- matchMedia does
-  // not exist while server-rendering, and useState must not touch it.
+  // matchMedia does not exist while server-rendering, so it is read in an effect
+  // rather than during render.
   useEffect(() => {
-    const prefersDark =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-color-scheme: dark)').matches;
-    setMode(prefersDark ? 'dark' : 'light');
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    setMode(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   }, []);
 
-  // Stamp the root the tokens are scoped to.
   useEffect(() => {
-    if (!mode || typeof document === 'undefined') return;
+    if (typeof document === 'undefined') return;
     const root = document.querySelector('.mon-root');
     if (root) root.setAttribute('data-mon-theme', mode);
   }, [mode]);
 
-  const dark = mode === 'dark';
-
   return (
-    <button
-      type="button"
-      className="mon-themeswitch"
-      aria-pressed={dark}
-      aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
-      title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
-      onClick={() => setMode(dark ? 'light' : 'dark')}
-    >
-      <span className="mon-sw-hint mon-sw-hint--sun">
-        <SunIcon />
-      </span>
-      <span className="mon-sw-hint mon-sw-hint--moon">
-        <MoonIcon />
-      </span>
-      <span className="mon-sw-knob">
-        <SunIcon />
-        <MoonIcon />
-      </span>
-    </button>
+    <div className="mon-theme">
+      {/* aria-label on the group rather than aria-labelledby + a static id: the id
+          would be duplicated the moment two headers rendered at once. */}
+      <span className="mon-theme-label">Theme</span>
+      <div className="mon-theme-seg" role="group" aria-label="Theme">
+        <button
+          type="button"
+          className="mon-theme-opt"
+          aria-pressed={mode === 'light'}
+          aria-label="Light theme"
+          title="Light theme"
+          onClick={() => setMode('light')}
+        >
+          <SunIcon />
+        </button>
+        <button
+          type="button"
+          className="mon-theme-opt"
+          aria-pressed={mode === 'dark'}
+          aria-label="Dark theme"
+          title="Dark theme"
+          onClick={() => setMode('dark')}
+        >
+          <MoonIcon />
+        </button>
+      </div>
+    </div>
   );
 }
-
 
 /* ---------------- Header ---------------- */
 
@@ -108,7 +113,9 @@ export function MonitorHeader({ eyebrow, title, subtitle, syncState = 'synced' }
           {subtitle ? <p className="mon-subtitle">{subtitle}</p> : null}
         </div>
         {/* SYNCED, with the theme switch directly beneath it. */}
+        {/* Theme control on top, then the SYNCED stamp. */}
         <div className="mon-sync-group">
+          <ThemeSwitch />
           <div className="mon-sync">
             <span className="mon-dot" data-state={saving ? 'saving' : undefined} aria-hidden="true" />
             <span className="mon-sync-label" data-state={saving ? 'saving' : undefined}>
@@ -118,7 +125,6 @@ export function MonitorHeader({ eyebrow, title, subtitle, syncState = 'synced' }
               {date}, {time}
             </span>
           </div>
-          <ThemeSwitch />
         </div>
       </div>
       <div className="mon-rule" />
