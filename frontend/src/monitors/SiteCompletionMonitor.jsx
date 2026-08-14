@@ -25,7 +25,7 @@ const STATUS_FILTERS = ['All', 'Complete', 'Incomplete', 'NA'];
 const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 
 /** Grey track for an unmeasurable value -- visually distinct from 0%, which is red. */
-const EMPTY_TRACK = '#2A3142';
+const EMPTY_TRACK = 'var(--mon-empty)';
 
 /** Filter pills use the same words as the STATUS column. */
 const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'Not Started'];
@@ -44,8 +44,8 @@ function milestoneRank(key) {
  * exists". Colour is never the only signal; the word and the icon ship with it.
  */
 const ITEM_STATUS_PRESENTATION = {
-  complete: { color: '#34E0A1', label: 'Complete', Icon: CircleCheck },
-  inProgress: { color: '#F5B133', label: 'In Progress', Icon: Circle },
+  complete: { color: 'var(--mon-complete)', label: 'Complete', Icon: CircleCheck },
+  inProgress: { color: 'var(--mon-progress)', label: 'In Progress', Icon: Circle },
   /*
    * "Not Started", not "N/A".
    *
@@ -53,11 +53,11 @@ const ITEM_STATUS_PRESENTATION = {
    * 69 photo fields on Knolls -- and it is a different quantity from a tracker task
    * with no recorded date. Two figures under one word contradict each other.
    */
-  notStarted: { color: '#5A6478', label: 'Not Started', Icon: Circle },
-  rejected: { color: '#F0576E', label: 'Rejected', Icon: CircleMinus },
+  notStarted: { color: 'var(--mon-dim)', label: 'Not Started', Icon: Circle },
+  rejected: { color: 'var(--mon-danger)', label: 'Rejected', Icon: CircleMinus },
   // Retained so a stale payload cannot blank the column.
-  missing: { color: '#5A6478', label: 'Not Started', Icon: Circle },
-  na: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
+  missing: { color: 'var(--mon-dim)', label: 'Not Started', Icon: Circle },
+  na: { color: 'var(--mon-text-3)', label: 'N/A', Icon: CircleMinus },
 };
 
 /**
@@ -103,9 +103,9 @@ function ChecklistRow({ item }) {
 
 /** Icon + colour per document status. Never colour alone -- the label ships too. */
 const STATUS_PRESENTATION = {
-  [ITEM_STATUS.COMPLETE]: { color: '#34E0A1', label: 'Complete', Icon: CircleCheck },
-  [ITEM_STATUS.MISSING]: { color: '#5A6478', label: 'Missing', Icon: Circle },
-  [ITEM_STATUS.NA]: { color: '#9098A9', label: 'N/A', Icon: CircleMinus },
+  [ITEM_STATUS.COMPLETE]: { color: 'var(--mon-complete)', label: 'Complete', Icon: CircleCheck },
+  [ITEM_STATUS.MISSING]: { color: 'var(--mon-dim)', label: 'Missing', Icon: Circle },
+  [ITEM_STATUS.NA]: { color: 'var(--mon-text-3)', label: 'N/A', Icon: CircleMinus },
 };
 
 function DocumentRow({ item }) {
@@ -299,7 +299,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         note: null,
       };
     }
-    if (!liveMs) return { pct: 0, color: '#5A6478', label: '--', note: null };
+    if (!liveMs) return { pct: 0, color: 'var(--mon-dim)', label: '--', note: null };
 
     /*
      * PHOTOS UPLOADED = (all photo fields - fields without media) / all photo fields.
@@ -324,7 +324,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
     const all = liveMs.fieldsAll;
     const pct = liveMs.coveragePct;
     if (pct === null || pct === undefined || settled === null || settled === undefined || !all) {
-      return { pct: 0, color: '#5A6478', label: '--', note: null };
+      return { pct: 0, color: 'var(--mon-dim)', label: '--', note: null };
     }
     return {
       pct,
@@ -399,7 +399,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       { label: 'Total Ignored', value: n(liveMs.ignoredMedia) },
       { label: 'Total Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
       { label: 'Total Media', value: n(liveMs.photos) },
-      { label: 'Not applicable', value: n(liveMs.naFields), color: '#9098A9' },
+      { label: 'Not applicable', value: n(liveMs.naFields), color: 'var(--mon-text-3)' },
       { label: 'Total Fields w/o media', value: n(liveMs.incompleteFields) },
     ];
   }, [liveMs]);
@@ -444,7 +444,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         {
           label: 'TOTAL DOCUMENTS',
           value: docTotal === null ? '--' : docTotal,
-          color: '#F7F8FB',
+          color: 'var(--mon-text-bright)',
         },
         {
           /*
@@ -460,12 +460,12 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           value: docPct === null ? '--' : `${docPct}%`,
           color:
             docPct === null
-              ? '#5A6478'
+              ? 'var(--mon-dim)'
               : docPct >= 95
                 ? DANGER
                 : docPct >= 80
-                  ? '#F5B133'
-                  : '#F7F8FB',
+                  ? 'var(--mon-progress)'
+                  : 'var(--mon-text-bright)',
         },
         {
           /*
@@ -493,7 +493,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
            */
           label: 'N/A',
           value: docNa === null ? '--' : docNa,
-          color: '#9098A9',
+          color: 'var(--mon-text-3)',
         },
         {
           label: 'MILESTONES DONE',
@@ -504,14 +504,14 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
         },
       ]
     : [
-        { label: 'TOTAL DOCUMENTS', value: summary.totalDocuments, color: '#F7F8FB' },
+        { label: 'TOTAL DOCUMENTS', value: summary.totalDocuments, color: 'var(--mon-text-bright)' },
         { label: 'UPLOADED %', value: `${summary.overallPct}%`, color: pctColor(summary.overallPct) },
         {
           label: 'MISSING',
           value: summary.missing,
           color: summary.missing > 0 ? DANGER : statusColor(STATUS.COMPLETE),
         },
-        { label: 'N/A', value: summary.naCount, color: '#9098A9' },
+        { label: 'N/A', value: summary.naCount, color: 'var(--mon-text-3)' },
         {
           label: 'MILESTONES DONE',
           value: `${summary.milestonesDone}/${summary.milestoneCount}`,
@@ -636,7 +636,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                     </div>
                     <span
                       className="mon-mrow-pct"
-                      style={{ color: unmeasured ? '#5A6478' : progressColor(m.pct) }}
+                      style={{ color: unmeasured ? 'var(--mon-dim)' : progressColor(m.pct) }}
                       title={unmeasured ? m.note || 'No source for this milestone' : undefined}
                     >
                       {unmeasured ? '--' : `${m.pct}%`}
@@ -701,7 +701,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
                 style={{
                   color:
                     reportsCard.missedDays === null
-                      ? '#5A6478'
+                      ? 'var(--mon-dim)'
                       : reportsCard.missedDays > 0
                         ? DANGER
                         : statusColor(STATUS.COMPLETE),
@@ -738,7 +738,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
           value={query}
           onChange={setQuery}
           placeholder={checklist ? 'Search task or Task ID...' : 'Search document name...'}
-          icon={<Search size={15} color="#5A6478" aria-hidden="true" />}
+          icon={<Search size={15} color="var(--mon-dim)" aria-hidden="true" />}
         />
         <PillGroup
           options={checklist ? ITEM_FILTERS : STATUS_FILTERS}

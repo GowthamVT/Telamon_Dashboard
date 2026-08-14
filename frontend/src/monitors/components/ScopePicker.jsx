@@ -47,7 +47,7 @@ export function ScopePicker({ tree, scope, onChange, loading, error }) {
   if (error) {
     return (
       <div className="mon-scopebar">
-        <span className="mon-scope-note" style={{ color: '#F0576E' }}>
+        <span className="mon-scope-note" style={{ color: 'var(--mon-danger)' }}>
           Hierarchy unavailable — {error.message}
         </span>
       </div>

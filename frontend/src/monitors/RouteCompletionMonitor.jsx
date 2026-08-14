@@ -185,20 +185,20 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
         items={[
           // Live: the number of nodes in the current Company > Site > Node scope,
           // so it tracks the selection (198 all Telamon -> 16 one route -> 1 node).
-          { label: 'TOTAL SITES', value: kpiTotal, color: '#F7F8FB' },
+          { label: 'TOTAL SITES', value: kpiTotal, color: 'var(--mon-text-bright)' },
           {
             label: 'PHOTOS UPLOADED %',
             value: totals.photoPct === null ? '--' : `${totals.photoPct}%`,
-            color: totals.photoPct === null ? '#5A6478' : pctColor(totals.photoPct),
+            color: totals.photoPct === null ? 'var(--mon-dim)' : pctColor(totals.photoPct),
           },
           // Live: summed from the rows in scope.
-          { label: 'DAILY REPORTS SUBMITTED', value: totals.reports, color: '#F7F8FB' },
+          { label: 'DAILY REPORTS SUBMITTED', value: totals.reports, color: 'var(--mon-text-bright)' },
           {
             label: 'MISSED REPORT DAYS',
             value: totals.missedDays === null ? '--' : totals.missedDays,
             color:
               totals.missedDays === null
-                ? '#5A6478'
+                ? 'var(--mon-dim)'
                 : totals.missedDays > 0
                   ? DANGER
                   : statusColor(STATUS.COMPLETE),
@@ -212,7 +212,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           value={query}
           onChange={setQuery}
           placeholder="Search site name..."
-          icon={<Search size={15} color="#5A6478" aria-hidden="true" />}
+          icon={<Search size={15} color="var(--mon-dim)" aria-hidden="true" />}
         />
         <PillGroup options={STATUS_FILTERS} value={status} onChange={setStatus} label="Filter by status" />
         <Select value={sort} onChange={setSort} options={SORT_OPTIONS} label="Sort sites by" />
@@ -243,7 +243,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                   {site.duration ? ` · ${site.duration}` : ''}
                 </p>
                 {showRouteOnRows && site.routeName ? (
-                  <p className="mon-cell-sub" style={{ color: '#4C8DFF' }}>
+                  <p className="mon-cell-sub" style={{ color: 'var(--mon-notstarted)' }}>
                     {site.routeName}
                   </p>
                 ) : null}

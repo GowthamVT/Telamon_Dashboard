@@ -5,7 +5,93 @@
  * No component here fetches, so swapping mock data for Snowflake later touches
  * only the container modules.
  */
+import { useEffect, useState } from 'react';
 import { EMPTY_TRACK, litBars, nowStamp, statusColor, statusTint } from '../lib/status';
+
+/* ---------------- Theme switch ---------------- */
+
+const SunIcon = () => (
+  <svg className="mon-i-sun" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="4.6" fill="currentColor" />
+    <g stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="12" y1="1.4" x2="12" y2="4" />
+      <line x1="12" y1="20" x2="12" y2="22.6" />
+      <line x1="1.4" y1="12" x2="4" y2="12" />
+      <line x1="20" y1="12" x2="22.6" y2="12" />
+      <line x1="4.5" y1="4.5" x2="6.3" y2="6.3" />
+      <line x1="17.7" y1="17.7" x2="19.5" y2="19.5" />
+      <line x1="4.5" y1="19.5" x2="6.3" y2="17.7" />
+      <line x1="17.7" y1="6.3" x2="19.5" y2="4.5" />
+    </g>
+  </svg>
+);
+
+const MoonIcon = () => (
+  <svg className="mon-i-moon" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="currentColor" d="M20.3 15A8.6 8.6 0 0 1 9 3.7a9 9 0 1 0 11.3 11.3z" />
+  </svg>
+);
+
+/**
+ * Light/dark switch for the monitor.
+ *
+ * Writes `data-mon-theme` onto the .mon-root element, which is where the palette
+ * tokens live. Deliberately NOT on <html>: the monitor is embedded in a
+ * cross-origin iframe alongside a separate light-themed dashboard, and stamping
+ * the document root would reach outside this component's own styles.
+ *
+ * NOT PERSISTED, and that is deliberate. localStorage is partitioned or blocked
+ * outright in a third-party iframe, so a saved choice would apply for some viewers
+ * and silently vanish for others. The initial state follows the operating system,
+ * which needs no storage and is right more often than a remembered guess.
+ *
+ * Colour is not the only signal: the knob moves and the icon changes shape.
+ */
+export function ThemeSwitch() {
+  const [mode, setMode] = useState(null);
+
+  // Read the OS preference on mount rather than during render -- matchMedia does
+  // not exist while server-rendering, and useState must not touch it.
+  useEffect(() => {
+    const prefersDark =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches;
+    setMode(prefersDark ? 'dark' : 'light');
+  }, []);
+
+  // Stamp the root the tokens are scoped to.
+  useEffect(() => {
+    if (!mode || typeof document === 'undefined') return;
+    const root = document.querySelector('.mon-root');
+    if (root) root.setAttribute('data-mon-theme', mode);
+  }, [mode]);
+
+  const dark = mode === 'dark';
+
+  return (
+    <button
+      type="button"
+      className="mon-themeswitch"
+      aria-pressed={dark}
+      aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+      title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+      onClick={() => setMode(dark ? 'light' : 'dark')}
+    >
+      <span className="mon-sw-hint mon-sw-hint--sun">
+        <SunIcon />
+      </span>
+      <span className="mon-sw-hint mon-sw-hint--moon">
+        <MoonIcon />
+      </span>
+      <span className="mon-sw-knob">
+        <SunIcon />
+        <MoonIcon />
+      </span>
+    </button>
+  );
+}
+
 
 /* ---------------- Header ---------------- */
 
@@ -21,14 +107,18 @@ export function MonitorHeader({ eyebrow, title, subtitle, syncState = 'synced' }
           <h1 className="mon-title">{title}</h1>
           {subtitle ? <p className="mon-subtitle">{subtitle}</p> : null}
         </div>
-        <div className="mon-sync">
-          <span className="mon-dot" data-state={saving ? 'saving' : undefined} aria-hidden="true" />
-          <span className="mon-sync-label" data-state={saving ? 'saving' : undefined}>
-            {saving ? 'SAVING' : 'SYNCED'}
-          </span>
-          <span className="mon-sync-stamp">
-            {date}, {time}
-          </span>
+        {/* SYNCED, with the theme switch directly beneath it. */}
+        <div className="mon-sync-group">
+          <div className="mon-sync">
+            <span className="mon-dot" data-state={saving ? 'saving' : undefined} aria-hidden="true" />
+            <span className="mon-sync-label" data-state={saving ? 'saving' : undefined}>
+              {saving ? 'SAVING' : 'SYNCED'}
+            </span>
+            <span className="mon-sync-stamp">
+              {date}, {time}
+            </span>
+          </div>
+          <ThemeSwitch />
         </div>
       </div>
       <div className="mon-rule" />
@@ -234,7 +324,7 @@ export function ReportsCell({ count, missedDays, reportDays }) {
     return (
       <div className="mon-reports">
         <span className="mon-reports-value">{count}</span>
-        <p className="mon-reports-sub" style={{ color: '#5A6478' }}>
+        <p className="mon-reports-sub" style={{ color: 'var(--mon-dim)' }}>
           {count === 0
             ? 'none submitted'
             : `on ${reportDays ?? count} day${(reportDays ?? count) === 1 ? '' : 's'}`}
@@ -246,7 +336,7 @@ export function ReportsCell({ count, missedDays, reportDays }) {
   return (
     <div className="mon-reports">
       <span className="mon-reports-value">{count}</span>
-      <p className="mon-reports-sub" style={{ color: missedDays > 0 ? '#F0576E' : '#5A6478' }}>
+      <p className="mon-reports-sub" style={{ color: missedDays > 0 ? 'var(--mon-danger)' : 'var(--mon-dim)' }}>
         {missedDays > 0 ? `${missedDays} day${missedDays === 1 ? '' : 's'} missed` : 'no gaps'}
       </p>
     </div>
@@ -311,7 +401,7 @@ export function MilestoneCell({ milestones, colorFor }) {
       </div>
       <p
         className="mon-miles-sub"
-        style={{ color: total > 0 && done === total ? '#34E0A1' : '#5A6478' }}
+        style={{ color: total > 0 && done === total ? 'var(--mon-complete)' : 'var(--mon-dim)' }}
       >
         {total === 0 ? 'no milestones' : `${done}/${total} milestones`}
       </p>

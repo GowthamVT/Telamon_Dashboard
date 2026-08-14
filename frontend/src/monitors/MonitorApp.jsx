@@ -83,7 +83,7 @@ export default function MonitorApp({ initialView = 'site' }) {
         sample data.
       */}
       {error ? (
-        <div className="mon-notice" style={{ borderLeftColor: '#F0576E' }}>
+        <div className="mon-notice" style={{ borderLeftColor: 'var(--mon-danger)' }}>
           <div>
             <strong>Live data unavailable — showing sample data</strong>
             {error.message} Start the API with <code>cd backend &amp;&amp; npm run dev</code>.

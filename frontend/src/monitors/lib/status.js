@@ -13,14 +13,20 @@ export const STATUS = {
   YET_TO_START: 'Yet to Start',
 };
 
+/*
+ * Themed through CSS variables rather than literal hexes, so one set of
+ * components serves both themes. The tokens are defined in monitor.css; the
+ * meaning of each colour is identical in light and dark, only its lightness
+ * changes -- #34e0a1 measures 1.6:1 on white and had to darken to #0b8f5d.
+ */
 export const STATUS_COLORS = {
-  [STATUS.COMPLETE]: { fg: '#34E0A1', bg: 'rgba(52,224,161,0.12)' },
-  [STATUS.IN_PROGRESS]: { fg: '#F5B133', bg: 'rgba(245,177,51,0.12)' },
-  [STATUS.YET_TO_START]: { fg: '#4C8DFF', bg: 'rgba(76,141,255,0.12)' },
+  [STATUS.COMPLETE]: { fg: 'var(--mon-complete)', bg: 'var(--mon-complete-bg)' },
+  [STATUS.IN_PROGRESS]: { fg: 'var(--mon-progress)', bg: 'var(--mon-progress-bg)' },
+  [STATUS.YET_TO_START]: { fg: 'var(--mon-notstarted)', bg: 'var(--mon-notstarted-bg)' },
 };
 
-export const DANGER = '#F0576E';
-export const EMPTY_TRACK = '#232A36';
+export const DANGER = 'var(--mon-danger)';
+export const EMPTY_TRACK = 'var(--mon-empty)';
 
 export function statusColor(status) {
   return STATUS_COLORS[status]?.fg || '#EAEDF3';
