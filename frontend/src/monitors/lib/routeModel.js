@@ -141,8 +141,15 @@ export function rowsFromNodes(nodes = []) {
     return {
       nodeId: node.nodeId,
       name: node.nodeName,
-      start: node.startDate || '--',
-      duration: monthsSince(node.startDate),
+      /*
+       * The SITE cell shows WHEN THE SITE WENT IN PROGRESS where that is recorded,
+       * and the start date otherwise -- with a word saying which, because the two
+       * mean different things and a bare date cannot tell them apart. Only 57 of 202
+       * nodes carry a transition, so the fallback is the common case.
+       */
+      start: node.inProgressSince || node.startDate || '--',
+      startKind: node.inProgressSince ? 'inProgress' : 'start',
+      duration: monthsSince(node.inProgressSince || node.startDate),
       status: mapNodeStatus(node.workStatus),
       routeName: node.routeName,
       companyName: node.companyName,

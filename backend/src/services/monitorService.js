@@ -253,13 +253,94 @@ async function nodesInScope(scope = {}, { label = 'mongo-nodes' } = {}) {
             null,
           ],
         },
+        /*
+         * The status transitions, resolved in JS below rather than here: picking the
+         * earliest IN PROGRESS entry and reading its comment needs branching that an
+         * aggregation expression makes unreadable.
+         */
+        statusLog: {
+          $map: {
+            input: { $ifNull: ['$nodeStatus.historyLog', []] },
+            as: 'h',
+            in: { status: '$$h.status', at: '$$h.updatedDate', comments: '$$h.comments' },
+          },
+        },
       },
     },
     { $sort: { nodeName: 1 } },
   ];
 
   const { rows, elapsedMs } = await mongo.aggregate(NODES, pipeline, { label });
-  return { nodes: rows, elapsedMs };
+  return {
+    nodes: rows.map((r) => {
+      const { statusLog, ...node } = r;
+      return { ...node, inProgressSince: inProgressSince(statusLog) };
+    }),
+    elapsedMs,
+  };
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * WHEN DID THIS SITE MOVE TO IN PROGRESS?
+ *
+ * SmallCellNode.nodeStatus.historyLog holds the transitions -- { status, updatedDate,
+ * comments } -- and the earliest entry whose status is IN PROGRESS is the one wanted.
+ *
+ * Its `updatedDate` is WHEN THE RECORD WAS TOUCHED, not when work began, and on this
+ * data that difference is severe. Measured across the 57 Telamon nodes that have such
+ * an entry:
+ *
+ *     25 nodes share updatedDate 2026-02-27
+ *     11 nodes share             2025-12-03
+ *     10 nodes share             2026-04-17
+ *
+ * Those clusters are bulk edits. Meanwhile 25 of the 57 carry a bare M/D/YY date in
+ * `comments` -- the crew's record of the real date -- and it disagrees with
+ * updatedDate in ALL 25 cases, never once agreeing:
+ *
+ *     DEFUNIAK SPRINGS   system 2026-02-27   comment 2025-10-14
+ *     ROBERTSDALE        system 2026-02-27   comment 2025-06-24
+ *
+ * So the comment wins when it is a bare date, and the timestamp is the fallback.
+ * Reading updatedDate alone would print 2026-02-27 on twenty-five different rows.
+ *
+ * The parse is deliberately narrow: ^M/D/YY$ and nothing else. 29 of the 57 comments
+ * are prose ("Telamon PM to check and make it Field Complete...") and are rejected
+ * outright rather than mined for a date. Where the day exceeds 12 the order is
+ * unambiguous (10/14, 8/26, 7/28, 6/24) and always month-first, so the few ambiguous
+ * ones (7/10, 6/10) are read the same way.
+ *
+ * Returns null for the 145 nodes with no IN PROGRESS entry. Null means "not recorded",
+ * and the UI must not present it as a start date.
+ * ---------------------------------------------------------------------------
+ */
+function commentDate(text) {
+  const m = String(text || '')
+    .trim()
+    .match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  let year = Number(m[3]);
+  if (year < 100) year += 2000;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  return Number.isNaN(dt.getTime()) ? null : dt.toISOString().slice(0, 10);
+}
+
+function inProgressSince(log) {
+  const entries = (Array.isArray(log) ? log : [])
+    .filter((e) => String(e && e.status).trim().toUpperCase() === 'IN PROGRESS')
+    .sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
+  if (!entries.length) return null;
+
+  const first = entries[0];
+  const stated = commentDate(first.comments);
+  if (stated) return stated;
+  const at = Number(first.at);
+  if (!at || Number.isNaN(at)) return null;
+  return new Date(at).toISOString().slice(0, 10);
 }
 
 /** Nodes in scope. */
@@ -434,6 +515,7 @@ async function getHierarchy(scope = {}) {
         nodeId: r.nodeId,
         nodeName: r.nodeName,
         startDate: r.startDate,
+        inProgressSince: r.inProgressSince,
       });
     }
 

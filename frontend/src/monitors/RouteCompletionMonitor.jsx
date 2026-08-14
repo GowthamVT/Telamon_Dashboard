@@ -220,10 +220,18 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
             <div className="mon-grid mon-trow" key={site.nodeId || site.name} role="row">
               <div>
                 <p className="mon-cell-title">{site.name}</p>
-                <p className="mon-cell-sub">
-                  {/* Start date and age only. The node code and the raw status used
-                      to sit here too -- the code duplicated the site name above it,
-                      and the status duplicated the pill at the end of the row. */}
+                <p
+                  className="mon-cell-sub"
+                  title={
+                    site.startKind === 'inProgress'
+                      ? `In progress since ${site.start}`
+                      : `Site start date ${site.start} -- no In Progress transition is recorded for this site`
+                  }
+                >
+                  {/* The word matters: "In progress" is a transition date, "Started" is
+                      the site's start date, and only 57 of 202 sites have the former.
+                      Printing a bare date would present the two as the same thing. */}
+                  {site.startKind === 'inProgress' ? 'In progress ' : 'Started '}
                   {site.start}
                   {site.duration ? ` · ${site.duration}` : ''}
                 </p>

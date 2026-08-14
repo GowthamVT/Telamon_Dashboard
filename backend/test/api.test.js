@@ -52,6 +52,17 @@ const NODE_ROW = {
   recordStatus: 'Active',
   siteStatus: 'In-progress',
   startDate: '2026-01-15',
+  /*
+   * The status transitions, as nodesInScope projects them. Two IN PROGRESS entries so
+   * the EARLIEST must win, and the earliest carries a bare M/D/YY comment so the
+   * comment must beat the timestamp -- on real data those disagree every time, with 25
+   * nodes sharing one bulk-edited timestamp.
+   */
+  statusLog: [
+    { status: 'YET TO START', at: 1735689600000, comments: '' },
+    { status: 'IN PROGRESS', at: 1772175600000, comments: '10/14/25' },
+    { status: 'IN PROGRESS', at: 1780000000000, comments: '1/2/26' },
+  ],
 };
 
 mongo.aggregate = async (collection, pipeline, opts = {}) => {
@@ -387,6 +398,28 @@ test('Route Monitor milestones come from the tracker, not photo stages', async (
     executed.some((e) => e.label === 'mongo-tracker-forms'),
     'the route endpoint must query the tracker'
   );
+});
+
+test('the node row carries when the site moved to In Progress', async () => {
+  /*
+   * From SmallCellNode.nodeStatus.historyLog. Two things must hold, and both were
+   * measured on live data before being encoded:
+   *
+   *  1. The EARLIEST IN PROGRESS entry wins, not the latest.
+   *  2. A bare M/D/YY comment beats the entry's updatedDate. Across the 57 Telamon
+   *     nodes that have such an entry, 25 carry a comment date and it disagrees with
+   *     the timestamp in ALL 25 cases -- 25 of them share the timestamp 2026-02-27,
+   *     which is a bulk edit rather than a transition.
+   *
+   * The stub's earliest entry says 10/14/25 while its timestamp is 2026-02-27, so a
+   * regression to the timestamp, or to the later entry, changes this value.
+   */
+  const { body } = await request(`/api/monitor/route?siteId=${SITE_ID}`);
+  const node = body.nodes[0];
+
+  assert.equal(node.inProgressSince, '2025-10-14');
+  assert.equal(node.startDate, '2026-01-15', 'the start date is still reported separately');
+  assert.ok(!('statusLog' in node), 'the raw log is resolved server-side, not shipped');
 });
 
 test('GET /api/monitor/route attaches metrics to each row', async () => {
