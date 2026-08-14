@@ -17,7 +17,6 @@ import {
 } from './components/primitives';
 import { filterSites, rowsFromNodes, summarise } from './lib/routeModel';
 import {
-  DANGER,
   milestoneColor,
   pctColor,
   STATUS,
@@ -110,12 +109,10 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     if (!isLive) {
       return {
         reports: summary.totalReports,
-        missedDays: summary.totalMissedDays,
         photoPct: summary.avgPhotoPct,
       };
     }
     const withReports = rows.filter((r) => r.reports !== null && r.reports !== undefined);
-    const withMissed = rows.filter((r) => r.missedDays !== null && r.missedDays !== undefined);
     // Pooled (total covered / total applicable), not a mean of per-node percentages:
     // averaging would weight a 1-field node the same as a 380-field one.
     const covered = rows.reduce((sum, r) => sum + (r.photosUploaded || 0), 0);
@@ -124,10 +121,6 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
     return {
       reports: withReports.reduce((sum, r) => sum + r.reports, 0),
       reportDays: withReports.reduce((sum, r) => sum + (r.reportDays || 0), 0),
-      // Summed only over nodes that HAVE a reporting window; nodes that never
-      // reported contribute nothing rather than a fabricated zero.
-      missedDays: withMissed.length ? withMissed.reduce((sum, r) => sum + r.missedDays, 0) : null,
-      nodesWithWindow: withMissed.length,
       nodesReporting: withReports.filter((r) => r.reports > 0).length,
       photoPct: defined > 0 ? Math.round((covered / defined) * 100) : null,
       photoCovered: covered,
@@ -193,16 +186,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           },
           // Live: summed from the rows in scope.
           { label: 'DAILY REPORTS SUBMITTED', value: totals.reports, color: 'var(--mon-text-bright)' },
-          {
-            label: 'MISSED REPORT DAYS',
-            value: totals.missedDays === null ? '--' : totals.missedDays,
-            color:
-              totals.missedDays === null
-                ? 'var(--mon-dim)'
-                : totals.missedDays > 0
-                  ? DANGER
-                  : statusColor(STATUS.COMPLETE),
-          },
+          /* MISSED REPORT DAYS removed by request. The per-row DAILY REPORTS cell
+             still shows each site's missed days, so the figure is not lost. */
         ]}
       />
 

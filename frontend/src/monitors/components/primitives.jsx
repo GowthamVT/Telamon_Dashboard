@@ -157,7 +157,9 @@ export function SparkBars({ pct, color, heights = [16, 24, 30, 22, 12], small = 
 
 export function StatCards({ items }) {
   return (
-    <div className={`mon-stats mon-stats--${items.length >= 5 ? 5 : 4}`}>
+    /* The modifier is the column count, so three cards fill the row instead of
+       sitting in a four-column grid with a hole at the end. */
+    <div className={`mon-stats mon-stats--${Math.min(Math.max(items.length, 3), 5)}`}>
       {items.map((item) => (
         <div className="mon-stat" key={item.label}>
           <p className="mon-stat-value" style={{ color: item.color }}>

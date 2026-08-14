@@ -547,6 +547,13 @@
 }
 
 @media (min-width: 640px) {
+  /* Equal thirds, filling the row. Capped so the cards cannot grow past a
+     comfortable reading width on a wide monitor -- a KPI holding one number and one
+     short label looks empty long before it reaches half the screen. */
+  .mon-stats--3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    max-width: 1180px;
+  }
   .mon-stats--4 {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
