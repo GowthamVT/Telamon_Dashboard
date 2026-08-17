@@ -21,14 +21,14 @@ import { loadSiteMonitor } from './data/siteMock';
 
 const COLS = '0.55fr 3fr 1.2fr';
 
-const STATUS_FILTERS = ['All', 'Complete', 'Incomplete', 'NA'];
+const STATUS_FILTERS = ['All', 'Completed', 'Incomplete', 'NA'];
 const SORT_OPTIONS = ['Milestone order', 'Status', 'Name'];
 
 /** Grey track for an unmeasurable value -- visually distinct from 0%, which is red. */
 const EMPTY_TRACK = 'var(--mon-empty)';
 
 /** Filter pills use the same words as the STATUS column. */
-const ITEM_FILTERS = ['All', 'Complete', 'In Progress', 'Not Started'];
+const ITEM_FILTERS = ['All', 'Completed', 'In Progress', 'Not Started'];
 
 
 /** m1 < m2 < m3 < m4 < unmapped, so unmapped tasks read as an appendix. */
@@ -44,7 +44,7 @@ function milestoneRank(key) {
  * exists". Colour is never the only signal; the word and the icon ship with it.
  */
 const ITEM_STATUS_PRESENTATION = {
-  complete: { color: 'var(--mon-complete)', label: 'Complete', Icon: CircleCheck },
+  complete: { color: 'var(--mon-complete)', label: 'Completed', Icon: CircleCheck },
   inProgress: { color: 'var(--mon-progress)', label: 'In Progress', Icon: Circle },
   /*
    * "Not Started", not "N/A".
@@ -103,7 +103,7 @@ function ChecklistRow({ item }) {
 
 /** Icon + colour per document status. Never colour alone -- the label ships too. */
 const STATUS_PRESENTATION = {
-  [ITEM_STATUS.COMPLETE]: { color: 'var(--mon-complete)', label: 'Complete', Icon: CircleCheck },
+  [ITEM_STATUS.COMPLETE]: { color: 'var(--mon-complete)', label: 'Completed', Icon: CircleCheck },
   [ITEM_STATUS.MISSING]: { color: 'var(--mon-dim)', label: 'Missing', Icon: Circle },
   [ITEM_STATUS.NA]: { color: 'var(--mon-text-3)', label: 'N/A', Icon: CircleMinus },
 };
@@ -241,7 +241,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
   const visibleItems = useMemo(() => {
     if (!checklist) return null;
     const q = query.trim().toLowerCase();
-    const WANTED = { Complete: 'complete', 'In Progress': 'inProgress', 'Not Started': 'notStarted' };
+    const WANTED = { Completed: 'complete', 'In Progress': 'inProgress', 'Not Started': 'notStarted' };
 
     let out = checklist.filter((it) => {
       const text = `${it.task || ''} ${it.taskId || ''}`.toLowerCase();
@@ -398,9 +398,9 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       },
       { label: 'Total Ignored', value: n(liveMs.ignoredMedia) },
       { label: 'Total Fields', value: n(liveMs.fieldsApplicable ?? liveMs.photoFields) },
-      { label: 'Total Media', value: n(liveMs.photos) },
+      { label: 'Total Photos', value: n(liveMs.photos) },
       { label: 'Not applicable', value: n(liveMs.naFields), color: 'var(--mon-text-3)' },
-      { label: 'Total Fields w/o media', value: n(liveMs.incompleteFields) },
+      { label: 'Total Fields w/o Photos', value: n(liveMs.incompleteFields) },
     ];
   }, [liveMs]);
 
@@ -456,7 +456,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
            * is healthy, and painting it red would invent an alarm. Neutral until the
            * cap is actually close.
            */
-          label: 'UPLOADED %',
+          label: 'DOCUMENT UPLOADED %',
           value: docPct === null ? '--' : `${docPct}%`,
           color:
             docPct === null
@@ -479,7 +479,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
            * N/A fields are already excluded from it upstream, so MISSING and N/A never
            * count the same field twice.
            */
-          label: 'MISSING',
+          label: 'PHOTOS MISSING',
           value: docMissing === null ? '--' : docMissing,
           color: docMissing ? DANGER : statusColor(STATUS.COMPLETE),
         },
@@ -491,7 +491,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
            * Grey, not red: not-applicable is a neutral state and must not read as an
            * alarm.
            */
-          label: 'N/A',
+          label: 'PHOTOS N/A',
           value: docNa === null ? '--' : docNa,
           color: 'var(--mon-text-3)',
         },
@@ -505,13 +505,17 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
       ]
     : [
         { label: 'TOTAL DOCUMENTS', value: summary.totalDocuments, color: 'var(--mon-text-bright)' },
-        { label: 'UPLOADED %', value: `${summary.overallPct}%`, color: pctColor(summary.overallPct) },
         {
-          label: 'MISSING',
+          label: 'DOCUMENT UPLOADED %',
+          value: `${summary.overallPct}%`,
+          color: pctColor(summary.overallPct),
+        },
+        {
+          label: 'PHOTOS MISSING',
           value: summary.missing,
           color: summary.missing > 0 ? DANGER : statusColor(STATUS.COMPLETE),
         },
-        { label: 'N/A', value: summary.naCount, color: 'var(--mon-text-3)' },
+        { label: 'PHOTOS N/A', value: summary.naCount, color: 'var(--mon-text-3)' },
         {
           label: 'MILESTONES DONE',
           value: `${summary.milestonesDone}/${summary.milestoneCount}`,
@@ -594,7 +598,7 @@ export default function SiteCompletionMonitor({ data = loadSiteMonitor(), live =
             <CountBreakdown
               counts={[
                 {
-                  label: 'Milestones Complete',
+                  label: 'Milestones Completed',
                   value: milestoneView ? milestoneView.complete : summary.milestonesDone,
                   color: statusColor(STATUS.COMPLETE),
                 },

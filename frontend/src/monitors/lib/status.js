@@ -8,7 +8,7 @@
  */
 
 export const STATUS = {
-  COMPLETE: 'Complete',
+  COMPLETE: 'Completed',
   IN_PROGRESS: 'In Progress',
   YET_TO_START: 'Yet to Start',
 };

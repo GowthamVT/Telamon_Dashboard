@@ -86,7 +86,7 @@ export function summarise({ milestones, completion }) {
 
 /** Overall site status, mirroring the route monitor's vocabulary. */
 export function siteStatus(summary) {
-  if (summary.milestonesDone === summary.milestoneCount) return 'Complete';
+  if (summary.milestonesDone === summary.milestoneCount) return 'Completed';
   if (summary.milestonesNotStarted === summary.milestoneCount) return 'Yet to Start';
   return 'In Progress';
 }
@@ -100,7 +100,7 @@ export function filterItems(items, { query, status, milestone, sort }) {
     const needle = query.trim().toLowerCase();
     rows = rows.filter((i) => i.label.toLowerCase().includes(needle));
   }
-  if (status === 'Complete') rows = rows.filter((i) => i.status === ITEM_STATUS.COMPLETE);
+  if (status === 'Completed') rows = rows.filter((i) => i.status === ITEM_STATUS.COMPLETE);
   if (status === 'Incomplete') rows = rows.filter((i) => i.status === ITEM_STATUS.MISSING);
   if (status === 'NA') rows = rows.filter((i) => i.status === ITEM_STATUS.NA);
   if (milestone !== 'All milestones') rows = rows.filter((i) => i.milestone === milestone);

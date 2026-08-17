@@ -159,6 +159,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
         eyebrow="ROUTE COMPLETION MONITOR"
         title={routeName}
         subtitle={subtitle}
+        /* No SYNCED stamp here, by request. The theme switch stays. */
+        showSync={false}
       />
 
       {/* Hero: route-average completion + node status breakdown. */}
@@ -180,7 +182,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
           <div className="mon-hero-right">
             <CountBreakdown
               counts={[
-                { label: 'Complete', value: complete, color: statusColor(STATUS.COMPLETE) },
+                { label: STATUS.COMPLETE, value: complete, color: statusColor(STATUS.COMPLETE) },
                 { label: 'In Progress', value: inProgress, color: statusColor(STATUS.IN_PROGRESS) },
                 { label: 'Yet to Start', value: yetToStart, color: statusColor(STATUS.YET_TO_START) },
               ]}
@@ -188,7 +190,7 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
             <SegmentedBar
               total={kpiTotal}
               segments={[
-                { label: 'Complete', value: complete, color: STATUS_COLORS[STATUS.COMPLETE].fg },
+                { label: STATUS.COMPLETE, value: complete, color: STATUS_COLORS[STATUS.COMPLETE].fg },
                 { label: 'In Progress', value: inProgress, color: STATUS_COLORS[STATUS.IN_PROGRESS].fg },
                 { label: 'Yet to Start', value: yetToStart, color: STATUS_COLORS[STATUS.YET_TO_START].fg },
               ]}

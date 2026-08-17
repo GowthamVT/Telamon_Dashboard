@@ -100,7 +100,7 @@ export function ThemeSwitch() {
 
 /* ---------------- Header ---------------- */
 
-export function MonitorHeader({ eyebrow, title, subtitle, syncState = 'synced' }) {
+export function MonitorHeader({ eyebrow, title, subtitle, syncState = 'synced', showSync = true }) {
   const { date, time } = nowStamp();
   const saving = syncState === 'saving';
 
@@ -112,19 +112,21 @@ export function MonitorHeader({ eyebrow, title, subtitle, syncState = 'synced' }
           <h1 className="mon-title">{title}</h1>
           {subtitle ? <p className="mon-subtitle">{subtitle}</p> : null}
         </div>
-        {/* SYNCED, with the theme switch directly beneath it. */}
-        {/* Theme control on top, then the SYNCED stamp. */}
+        {/* Theme control on top, then the SYNCED stamp -- which the Route Monitor
+            switches off, leaving the switch on its own. */}
         <div className="mon-sync-group">
           <ThemeSwitch />
-          <div className="mon-sync">
-            <span className="mon-dot" data-state={saving ? 'saving' : undefined} aria-hidden="true" />
-            <span className="mon-sync-label" data-state={saving ? 'saving' : undefined}>
-              {saving ? 'SAVING' : 'SYNCED'}
-            </span>
-            <span className="mon-sync-stamp">
-              {date}, {time}
-            </span>
-          </div>
+          {showSync ? (
+            <div className="mon-sync">
+              <span className="mon-dot" data-state={saving ? 'saving' : undefined} aria-hidden="true" />
+              <span className="mon-sync-label" data-state={saving ? 'saving' : undefined}>
+                {saving ? 'SAVING' : 'SYNCED'}
+              </span>
+              <span className="mon-sync-stamp">
+                {date}, {time}
+              </span>
+            </div>
+          ) : null}
         </div>
       </div>
       <div className="mon-rule" />
