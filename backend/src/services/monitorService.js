@@ -265,6 +265,9 @@ async function nodesInScope(scope = {}, { label = 'mongo-nodes' } = {}) {
             in: { status: '$$h.status', at: '$$h.updatedDate', comments: '$$h.comments' },
           },
         },
+        /* When the status FIELD was last set. The fallback for the 59 sites that are
+           currently IN PROGRESS with an empty transition log. */
+        statusSetAt: { $ifNull: ['$nodeStatus.updateDate', null] },
       },
     },
     { $sort: { nodeName: 1 } },
@@ -273,8 +276,11 @@ async function nodesInScope(scope = {}, { label = 'mongo-nodes' } = {}) {
   const { rows, elapsedMs } = await mongo.aggregate(NODES, pipeline, { label });
   return {
     nodes: rows.map((r) => {
-      const { statusLog, ...node } = r;
-      return { ...node, inProgressSince: inProgressSince(statusLog) };
+      const { statusLog, statusSetAt, ...node } = r;
+      return {
+        ...node,
+        inProgressSince: inProgressSince(statusLog, node.workStatus, statusSetAt),
+      };
     }),
     elapsedMs,
   };
@@ -311,8 +317,21 @@ async function nodesInScope(scope = {}, { label = 'mongo-nodes' } = {}) {
  * unambiguous (10/14, 8/26, 7/28, 6/24) and always month-first, so the few ambiguous
  * ones (7/10, 6/10) are read the same way.
  *
- * Returns null for the 145 nodes with no IN PROGRESS entry. Null means "not recorded",
- * and the UI must not present it as a start date.
+ * THIRD SOURCE, for a node whose transition was never logged. 107 sites are currently
+ * IN PROGRESS and 59 of them have an empty historyLog, so tiers one and two find
+ * nothing. For those, nodeStatus.updateDate is when the status field itself was set --
+ * the only record that exists of the node becoming IN PROGRESS.
+ *
+ * BE AWARE OF WHAT THAT DATE IS. It clusters, because the statuses were set in bulk by
+ * a service account: 24 sites share 2026-07-23, 6 share 2026-07-02, 4 share 2026-07-24.
+ * It is therefore when the FLAG was set, which can be long after work began -- Auburn
+ * has photos from 2026-07-01 and a start date of 2025-11-18, yet its status stamp is
+ * 2026-07-23. It is used because the client asked for the status date specifically, and
+ * this is the record of it; the earliest photo or form submission would answer "when did
+ * work start" better and is available for all 59.
+ *
+ * Returns null only when a node is not currently in progress and never logged a
+ * transition. Null means "not recorded", and the UI must not present it as a start date.
  * ---------------------------------------------------------------------------
  */
 function commentDate(text) {
@@ -329,18 +348,25 @@ function commentDate(text) {
   return Number.isNaN(dt.getTime()) ? null : dt.toISOString().slice(0, 10);
 }
 
-function inProgressSince(log) {
+function inProgressSince(log, currentStatus, statusSetAt) {
   const entries = (Array.isArray(log) ? log : [])
     .filter((e) => String(e && e.status).trim().toUpperCase() === 'IN PROGRESS')
     .sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
-  if (!entries.length) return null;
 
-  const first = entries[0];
-  const stated = commentDate(first.comments);
-  if (stated) return stated;
-  const at = Number(first.at);
-  if (!at || Number.isNaN(at)) return null;
-  return new Date(at).toISOString().slice(0, 10);
+  if (entries.length) {
+    const first = entries[0];
+    const stated = commentDate(first.comments);
+    if (stated) return stated;
+    const at = Number(first.at);
+    if (at && !Number.isNaN(at)) return new Date(at).toISOString().slice(0, 10);
+  }
+
+  // Nothing logged: fall back to when the status field was set, but ONLY if the node is
+  // in progress now. On a node that has moved on, that stamp describes a later status.
+  if (String(currentStatus || '').trim().toUpperCase() !== 'IN PROGRESS') return null;
+  const set = Number(statusSetAt);
+  if (!set || Number.isNaN(set)) return null;
+  return new Date(set).toISOString().slice(0, 10);
 }
 
 /** Nodes in scope. */

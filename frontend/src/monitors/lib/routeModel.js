@@ -141,16 +141,28 @@ export function rowsFromNodes(nodes = []) {
     return {
       nodeId: node.nodeId,
       name: node.nodeName,
-      /*
-       * The SITE cell shows WHEN THE SITE WENT IN PROGRESS where that is recorded,
-       * and the start date otherwise -- with a word saying which, because the two
-       * mean different things and a bare date cannot tell them apart. Only 57 of 202
-       * nodes carry a transition, so the fallback is the common case.
-       */
-      start: node.inProgressSince || node.startDate || '--',
-      startKind: node.inProgressSince ? 'inProgress' : 'start',
-      duration: monthsSince(node.inProgressSince || node.startDate),
       status: mapNodeStatus(node.workStatus),
+
+      /*
+       * The SITE cell shows WHEN THE SITE WENT IN PROGRESS, falling back to its start
+       * date -- with a word saying which, because the two mean different things and a
+       * bare date cannot tell them apart.
+       *
+       * GATED ON THE MAPPED STATUS, the same value the STATUS pill uses, so the row can
+       * never say "In progress 2025-12-03" beside a "Complete" pill. Nine sites have a
+       * logged transition but have since moved on to COP APPROVED; for them the
+       * transition is history, and the pill is what the reader is looking at.
+       */
+      ...(() => {
+        const inProgressNow = mapNodeStatus(node.workStatus) === STATUS.IN_PROGRESS;
+        const since = inProgressNow ? node.inProgressSince : null;
+        return {
+          start: since || node.startDate || '--',
+          startKind: since ? 'inProgress' : 'start',
+          duration: monthsSince(since || node.startDate),
+        };
+      })(),
+
       routeName: node.routeName,
       companyName: node.companyName,
 

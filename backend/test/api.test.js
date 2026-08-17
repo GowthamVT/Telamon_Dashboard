@@ -400,6 +400,38 @@ test('Route Monitor milestones come from the tracker, not photo stages', async (
   );
 });
 
+test('with no logged transition, a live site falls back to when its status was set', async () => {
+  /*
+   * 107 Telamon sites are currently IN PROGRESS and 59 of them have an EMPTY
+   * historyLog, so the first two tiers find nothing. nodeStatus.updateDate is then the
+   * only record that the node became IN PROGRESS, and it is used -- gated on the node
+   * being in progress NOW, because on a node that has moved on that stamp describes a
+   * later status entirely.
+   *
+   * Worth knowing what the date is: it clusters, because the statuses were set in bulk
+   * by a service account. 24 sites share 2026-07-23.
+   */
+  const original = mongo.aggregate;
+  try {
+    mongo.aggregate = async (collection, pipeline, opts = {}) => {
+      const res = await original(collection, pipeline, opts);
+      if (collection === 'SmallCellNode') {
+        res.rows = res.rows.map((r) =>
+          'statusLog' in r ? { ...r, statusLog: [], statusSetAt: 1784790000000 } : r
+        );
+      }
+      return res;
+    };
+    cache.invalidateAll('test');
+    const { body } = await request(`/api/monitor/route?siteId=${SITE_ID}`);
+    // The stub node's workStatus is IN PROGRESS, so the fallback applies.
+    assert.equal(body.nodes[0].inProgressSince, '2026-07-23');
+  } finally {
+    mongo.aggregate = original;
+    cache.invalidateAll('test');
+  }
+});
+
 test('the node row carries when the site moved to In Progress', async () => {
   /*
    * From SmallCellNode.nodeStatus.historyLog. Two things must hold, and both were
