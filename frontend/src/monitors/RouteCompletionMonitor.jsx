@@ -38,8 +38,17 @@ const DATE_WORD = {
 const DATE_TITLE = {
   completed: (d) => `COP approved ${d}`,
   inProgress: (d) => `In progress since ${d}`,
-  start: (d) => `Site start date ${d} -- no status transition is recorded for this site`,
+  start: (d) => `Site start date ${d}`,
 };
+
+/*
+ * Resolve the kind DEFENSIVELY. A row without `startKind` -- the sample data had none --
+ * previously indexed these maps with undefined and called it, which threw and left the
+ * whole tab blank. A missing label must degrade to "Started", never take the page down.
+ */
+function dateKind(kind) {
+  return DATE_WORD[kind] ? kind : 'start';
+}
 
 /** Column widths for the site table, matching the reference layout. */
 const COLS = '1.8fr 1.1fr 1.1fr 1.1fr 1fr 1.1fr';
@@ -236,10 +245,10 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
             <div className="mon-grid mon-trow" key={site.nodeId || site.name} role="row">
               <div>
                 <p className="mon-cell-title">{site.name}</p>
-                <p className="mon-cell-sub" title={DATE_TITLE[site.startKind](site.start)}>
+                <p className="mon-cell-sub" title={DATE_TITLE[dateKind(site.startKind)](site.start)}>
                   {/* The word matters: these are three different moments and a bare date
                       cannot tell them apart. */}
-                  {DATE_WORD[site.startKind]}
+                  {DATE_WORD[dateKind(site.startKind)]}
                   {site.start}
                   {site.duration ? ` · ${site.duration}` : ''}
                 </p>

@@ -35,6 +35,7 @@ export function decorateSite(site) {
     return {
       ...site,
       status,
+      startKind: site.startKind || 'start',
       photosUploaded: 0,
       photosPct: 0,
       reports: 0,
@@ -45,6 +46,9 @@ export function decorateSite(site) {
   return {
     ...site,
     status,
+    /* The sample rows carry a plain start date, so they say so -- the live path sets
+       this per status in rowsFromNodes. */
+    startKind: site.startKind || 'start',
     photosPct: percent(site.photosUploaded, site.photosTotal),
     milestones: [site.m1, site.m2, site.m3, site.m4],
   };
