@@ -27,27 +27,25 @@ import { loadRouteMonitor } from './data/routeMock';
 
 /**
  * The date under a site name means a different thing in each status, so the word in
- * front of it changes with the status rather than being left to the reader to guess.
+ * front of it is carried by the TOOLTIP, not printed in the cell.
+ *
+ * The cell shows the date and the elapsed months only. The prefix -- "In progress",
+ * "Completed", "Started" -- was removed by request, so the wording that says WHICH
+ * of the three moments a date is now lives on hover.
  */
-const DATE_WORD = {
-  completed: 'Completed ',
-  inProgress: 'In progress ',
-  start: 'Started ',
-};
-
 const DATE_TITLE = {
-  completed: (d) => `COP approved ${d}`,
+  completed: (d) => `Completed (COP approved) ${d}`,
   inProgress: (d) => `In progress since ${d}`,
   start: (d) => `Site start date ${d}`,
 };
 
 /*
  * Resolve the kind DEFENSIVELY. A row without `startKind` -- the sample data had none --
- * previously indexed these maps with undefined and called it, which threw and left the
- * whole tab blank. A missing label must degrade to "Started", never take the page down.
+ * previously indexed this map with undefined and called it, which threw and left the
+ * whole tab blank. A missing kind must degrade, never take the page down.
  */
 function dateKind(kind) {
-  return DATE_WORD[kind] ? kind : 'start';
+  return DATE_TITLE[kind] ? kind : 'start';
 }
 
 /** Column widths for the site table, matching the reference layout. */
@@ -248,9 +246,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
               <div>
                 <p className="mon-cell-title">{site.name}</p>
                 <p className="mon-cell-sub" title={DATE_TITLE[dateKind(site.startKind)](site.start)}>
-                  {/* The word matters: these are three different moments and a bare date
-                      cannot tell them apart. */}
-                  {DATE_WORD[dateKind(site.startKind)]}
+                  {/* Date and age only. Which of the three moments it is comes from the
+                      tooltip above, and the STATUS pill on the same row implies it. */}
                   {site.start}
                   {site.duration ? ` · ${site.duration}` : ''}
                 </p>
