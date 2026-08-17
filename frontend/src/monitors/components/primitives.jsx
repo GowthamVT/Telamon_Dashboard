@@ -420,10 +420,9 @@ export function MilestoneCell({ milestones, colorFor }) {
 /**
  * OVERALL: the blend of PHOTOS, DAILY REPORTS and MILESTONES.
  *
- * The caption names the columns that went in. Without it a reader cannot tell a
- * three-column figure from a one-column one, and on most Telamon sites only photos
- * are measured -- so the number would look like a duplicate of the PHOTOS cell
- * with no way to know why.
+ * The columns that went in are named IN THE TOOLTIP, not in a caption under the
+ * figure. The caption was a third line of small print in a row that already has two,
+ * and on most rows it repeated what the neighbouring cells already show.
  */
 export function OverallCell({ pct, color, parts = [] }) {
   if (pct === null || pct === undefined) {
@@ -442,22 +441,11 @@ export function OverallCell({ pct, color, parts = [] }) {
         `${missing === 1 ? 'it is' : 'they are'} left out rather than counted as zero.`;
 
   return (
-    <div className="mon-overall">
-      <div className="mon-overall-row">
-        <SparkBars pct={pct} color={color} heights={[6, 10, 14, 9]} small />
-        <span className="mon-overall-pct" style={{ color }}>
-          {pct}%
-        </span>
-      </div>
-      {named.length ? (
-        <p className="mon-overall-sub" title={tip}>
-          {named.length === 3
-            ? 'all 3 columns'
-            : named.length === 1
-              ? `${named[0].label} only`
-              : named.map((p) => p.label).join(' + ')}
-        </p>
-      ) : null}
+    <div className="mon-overall" title={tip}>
+      <SparkBars pct={pct} color={color} heights={[6, 10, 14, 9]} small />
+      <span className="mon-overall-pct" style={{ color }}>
+        {pct}%
+      </span>
     </div>
   );
 }
