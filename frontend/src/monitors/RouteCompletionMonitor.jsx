@@ -26,16 +26,17 @@ import {
 import { loadRouteMonitor } from './data/routeMock';
 
 /**
- * The date under a site name means a different thing in each status, so the word in
- * front of it is carried by the TOOLTIP, not printed in the cell.
+ * The cell prints the date and its age only; every word about it lives in the TOOLTIP.
  *
- * The cell shows the date and the elapsed months only. The prefix -- "In progress",
- * "Completed", "Started" -- was removed by request, so the wording that says WHICH
- * of the three moments a date is now lives on hover.
+ * The date is always the same moment -- when the site went in progress -- so the four
+ * tooltips exist to explain the two cases that show no date: a site yet to start, and
+ * one whose transition was never recorded.
  */
 const DATE_TITLE = {
-  completed: (d) => `Completed (COP approved) ${d}`,
   inProgress: (d) => `In progress since ${d}`,
+  notStarted: () => 'Yet to start, so this site has no In Progress date',
+  unrecorded: () => 'No In Progress transition is recorded for this site',
+  /* Sample rows only -- they carry a plain start date and no transition history. */
   start: (d) => `Site start date ${d}`,
 };
 

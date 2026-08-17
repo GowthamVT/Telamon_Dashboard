@@ -234,33 +234,32 @@ export function rowsFromNodes(nodes = []) {
       status: mapNodeStatus(node.workStatus),
 
       /*
-       * The date under the site name FOLLOWS THE STATUS, so the sub-line and the STATUS
-       * pill always describe the same moment:
+       * The date under the site name is WHEN THE SITE WENT IN PROGRESS -- one moment,
+       * for both statuses that have reached it:
        *
-       *   Complete      -> when it was completed    "Completed 2026-07-27"
-       *   In Progress   -> when it went in progress "In progress 2026-07-17"
-       *   Yet to Start  -> its start date           "Started 2025-11-18"
+       *   In Progress   -> since when it has been in progress
+       *   Completed     -> since when it went in progress (NOT its completion date)
+       *   Yet to Start  -> "--", because it has no in-progress moment at all
        *
-       * Keyed on the MAPPED status -- the value the pill itself uses -- so a site that
-       * has moved on to COP APPROVED cannot read "In progress" beside a "Complete" pill.
+       * NO FALLBACK TO THE START DATE. A start date is when work was scheduled to
+       * begin, not when it began, and printing one here would answer a different
+       * question than the column asks. Where the transition was never recorded the
+       * cell says "--" and the tooltip says why.
        *
-       * Each falls back to the start date when its own date is missing, and the LABEL
-       * falls back with it: printing a start date under the word "Completed" would be a
-       * quiet falsehood.
+       * THAT IS MOST COMPLETED SITES: 33 of 39 have no In Progress entry in their
+       * status log, and the nodeStatus.updateDate fallback cannot stand in for them --
+       * on a completed node that stamp is when it was marked COMPLETE, not when work
+       * started. 107 of 124 in-progress sites do have a date.
        */
       ...(() => {
         const mapped = mapNodeStatus(node.workStatus);
-        const picked =
-          mapped === STATUS.COMPLETE
-            ? { date: node.completedOn, kind: 'completed' }
-            : mapped === STATUS.IN_PROGRESS
-              ? { date: node.inProgressSince, kind: 'inProgress' }
-              : { date: null, kind: 'start' };
+        const since = mapped === STATUS.YET_TO_START ? null : node.inProgressSince || null;
 
         return {
-          start: picked.date || node.startDate || '--',
-          startKind: picked.date ? picked.kind : 'start',
-          duration: monthsSince(picked.date || node.startDate),
+          start: since || '--',
+          startKind: mapped === STATUS.YET_TO_START ? 'notStarted' : since ? 'inProgress' : 'unrecorded',
+          // No date means no age to measure; "0mo" would read as "started this month".
+          duration: since ? monthsSince(since) : null,
         };
       })(),
 
