@@ -25,6 +25,22 @@ import {
 } from './lib/status';
 import { loadRouteMonitor } from './data/routeMock';
 
+/**
+ * The date under a site name means a different thing in each status, so the word in
+ * front of it changes with the status rather than being left to the reader to guess.
+ */
+const DATE_WORD = {
+  completed: 'Completed ',
+  inProgress: 'In progress ',
+  start: 'Started ',
+};
+
+const DATE_TITLE = {
+  completed: (d) => `COP approved ${d}`,
+  inProgress: (d) => `In progress since ${d}`,
+  start: (d) => `Site start date ${d} -- no status transition is recorded for this site`,
+};
+
 /** Column widths for the site table, matching the reference layout. */
 const COLS = '1.8fr 1.1fr 1.1fr 1.1fr 1fr 1.1fr';
 
@@ -220,18 +236,10 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
             <div className="mon-grid mon-trow" key={site.nodeId || site.name} role="row">
               <div>
                 <p className="mon-cell-title">{site.name}</p>
-                <p
-                  className="mon-cell-sub"
-                  title={
-                    site.startKind === 'inProgress'
-                      ? `In progress since ${site.start}`
-                      : `Site start date ${site.start} -- no In Progress transition is recorded for this site`
-                  }
-                >
-                  {/* The word matters: "In progress" is a transition date, "Started" is
-                      the site's start date, and only 57 of 202 sites have the former.
-                      Printing a bare date would present the two as the same thing. */}
-                  {site.startKind === 'inProgress' ? 'In progress ' : 'Started '}
+                <p className="mon-cell-sub" title={DATE_TITLE[site.startKind](site.start)}>
+                  {/* The word matters: these are three different moments and a bare date
+                      cannot tell them apart. */}
+                  {DATE_WORD[site.startKind]}
                   {site.start}
                   {site.duration ? ` · ${site.duration}` : ''}
                 </p>

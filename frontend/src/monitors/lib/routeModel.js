@@ -144,22 +144,33 @@ export function rowsFromNodes(nodes = []) {
       status: mapNodeStatus(node.workStatus),
 
       /*
-       * The SITE cell shows WHEN THE SITE WENT IN PROGRESS, falling back to its start
-       * date -- with a word saying which, because the two mean different things and a
-       * bare date cannot tell them apart.
+       * The date under the site name FOLLOWS THE STATUS, so the sub-line and the STATUS
+       * pill always describe the same moment:
        *
-       * GATED ON THE MAPPED STATUS, the same value the STATUS pill uses, so the row can
-       * never say "In progress 2025-12-03" beside a "Complete" pill. Nine sites have a
-       * logged transition but have since moved on to COP APPROVED; for them the
-       * transition is history, and the pill is what the reader is looking at.
+       *   Complete      -> when it was completed    "Completed 2026-07-27"
+       *   In Progress   -> when it went in progress "In progress 2026-07-17"
+       *   Yet to Start  -> its start date           "Started 2025-11-18"
+       *
+       * Keyed on the MAPPED status -- the value the pill itself uses -- so a site that
+       * has moved on to COP APPROVED cannot read "In progress" beside a "Complete" pill.
+       *
+       * Each falls back to the start date when its own date is missing, and the LABEL
+       * falls back with it: printing a start date under the word "Completed" would be a
+       * quiet falsehood.
        */
       ...(() => {
-        const inProgressNow = mapNodeStatus(node.workStatus) === STATUS.IN_PROGRESS;
-        const since = inProgressNow ? node.inProgressSince : null;
+        const mapped = mapNodeStatus(node.workStatus);
+        const picked =
+          mapped === STATUS.COMPLETE
+            ? { date: node.completedOn, kind: 'completed' }
+            : mapped === STATUS.IN_PROGRESS
+              ? { date: node.inProgressSince, kind: 'inProgress' }
+              : { date: null, kind: 'start' };
+
         return {
-          start: since || node.startDate || '--',
-          startKind: since ? 'inProgress' : 'start',
-          duration: monthsSince(since || node.startDate),
+          start: picked.date || node.startDate || '--',
+          startKind: picked.date ? picked.kind : 'start',
+          duration: monthsSince(picked.date || node.startDate),
         };
       })(),
 

@@ -280,6 +280,7 @@ async function nodesInScope(scope = {}, { label = 'mongo-nodes' } = {}) {
       return {
         ...node,
         inProgressSince: inProgressSince(statusLog, node.workStatus, statusSetAt),
+        completedOn: completedOn(statusLog, node.workStatus, statusSetAt),
       };
     }),
     elapsedMs,
@@ -346,6 +347,48 @@ function commentDate(text) {
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
   const dt = new Date(Date.UTC(year, month - 1, day));
   return Number.isNaN(dt.getTime()) ? null : dt.toISOString().slice(0, 10);
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * WHEN WAS THIS SITE COMPLETED?
+ *
+ * The same log, reading the COP APPROVED / COP COMPLETED entries. This source is in far
+ * better shape than the In Progress one: all 39 complete Telamon sites have an entry,
+ * none is missing, and the timestamps are node-specific rather than bulk-written --
+ * 2026-07-27, 2026-08-07, 2026-07-17, 2026-08-05 across neighbouring sites.
+ *
+ * The LATEST such entry wins, not the earliest. Two sites have more than one, and a
+ * site that was approved, rejected and approved again is complete as of the approval
+ * that stands.
+ *
+ * A bare M/D/YY comment still wins over the timestamp, as it does for In Progress --
+ * 7 of the 39 carry one. The rest are prose ("approved", "Submitted 7/14/26 Approved",
+ * "before ECSite", "7/20 site accepted") and are rejected by the parser rather than
+ * mined; on this data the timestamp is credible anyway, which is why prose costs
+ * nothing here.
+ * ---------------------------------------------------------------------------
+ */
+const COMPLETE_STATUSES = new Set(['COP APPROVED', 'COP COMPLETED', 'COMPLETE', 'COMPLETED']);
+
+function completedOn(log, currentStatus, statusSetAt) {
+  const entries = (Array.isArray(log) ? log : [])
+    .filter((e) => COMPLETE_STATUSES.has(String(e && e.status).trim().toUpperCase()))
+    .sort((a, b) => Number(a.at || 0) - Number(b.at || 0));
+
+  if (entries.length) {
+    const last = entries[entries.length - 1];
+    const stated = commentDate(last.comments);
+    if (stated) return stated;
+    const at = Number(last.at);
+    if (at && !Number.isNaN(at)) return new Date(at).toISOString().slice(0, 10);
+  }
+
+  // Nothing logged: the status stamp, but only while the node is complete NOW.
+  if (!COMPLETE_STATUSES.has(String(currentStatus || '').trim().toUpperCase())) return null;
+  const set = Number(statusSetAt);
+  if (!set || Number.isNaN(set)) return null;
+  return new Date(set).toISOString().slice(0, 10);
 }
 
 function inProgressSince(log, currentStatus, statusSetAt) {
@@ -542,6 +585,7 @@ async function getHierarchy(scope = {}) {
         nodeName: r.nodeName,
         startDate: r.startDate,
         inProgressSince: r.inProgressSince,
+        completedOn: r.completedOn,
       });
     }
 

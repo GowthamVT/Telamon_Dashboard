@@ -62,6 +62,10 @@ const NODE_ROW = {
     { status: 'YET TO START', at: 1735689600000, comments: '' },
     { status: 'IN PROGRESS', at: 1772175600000, comments: '10/14/25' },
     { status: 'IN PROGRESS', at: 1780000000000, comments: '1/2/26' },
+    // Two completions, so the LATEST must win -- a site approved, rejected and
+    // approved again is complete as of the approval that stands.
+    { status: 'COP APPROVED', at: 1784000000000, comments: 'approved' },
+    { status: 'COP APPROVED', at: 1785000000000, comments: 'Approved' },
   ],
 };
 
@@ -398,6 +402,23 @@ test('Route Monitor milestones come from the tracker, not photo stages', async (
     executed.some((e) => e.label === 'mongo-tracker-forms'),
     'the route endpoint must query the tracker'
   );
+});
+
+test('completion reads the LATEST approval, not the first', async () => {
+  /*
+   * From the same historyLog, reading COP APPROVED / COP COMPLETED. This source is in
+   * better shape than the In Progress one: all 39 complete Telamon sites have an entry
+   * and the timestamps are node-specific rather than bulk-written.
+   *
+   * The stub holds two approvals, 1784000000000 then 1785000000000. The later one wins,
+   * so a regression to "earliest" changes this date. Both comments are prose, so the
+   * timestamp is used -- which on this data is credible.
+   */
+  const { body } = await request(`/api/monitor/route?siteId=${SITE_ID}`);
+  const node = body.nodes[0];
+
+  assert.equal(node.completedOn, new Date(1785000000000).toISOString().slice(0, 10));
+  assert.equal(node.inProgressSince, '2025-10-14', 'the In Progress date is unaffected');
 });
 
 test('with no logged transition, a live site falls back to when its status was set', async () => {
