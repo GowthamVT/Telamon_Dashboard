@@ -128,87 +128,142 @@ export function monthsSince(iso, today = new Date()) {
 }
 
 /* ---------------------------------------------------------------------------
- * OVERALL = the three metric columns blended.
+ * OVERALL = one pooled ratio across the three metric columns.
  *
- * It used to be `photosPct` verbatim, so OVERALL and PHOTOS printed the same
- * number on every row and the column carried no information of its own.
+ * It used to be `photosPct` verbatim, so OVERALL and PHOTOS printed the same number
+ * on every row. It was then the mean of the three columns' percentages, which gave a
+ * small column the same say as a large one -- 4 milestone blocks weighing as much as
+ * 176 photo fields.
  *
- * Each column is turned into a percentage and they are averaged with EQUAL WEIGHT:
+ * NOW THE COUNTS ARE POOLED, which is the client's formula: add the three numerators,
+ * add the three denominators, divide once.
  *
- *   PHOTOS        coveragePct -- settled photo fields over all photo fields
- *   DAILY REPORTS reportDays / (reportDays + missedDays), the share of working
- *                 days in the observed reporting window that carry a report.
- *                 This is the arithmetic the old MISSED REPORT DAYS card used.
- *   MILESTONES    the mean of the tracker milestones that have a figure
+ *   OVERALL = (photo fields settled + days reported + milestones done)
+ *             ----------------------------------------------------------
+ *             (photo fields all + days in the window + milestone blocks)
  *
- * A COLUMN WITH NO DATA IS LEFT OUT rather than counted as zero, and the cell
- * says which columns went in. Scoring an absent column as 0 would mean:
+ * Worked through the row this was specified against -- 11/20 photos, 2 reports with
+ * 4 days missed, 0/4 milestones:
  *
- *   - every site loses a third of its score because TELAMON-ILA-TRACKER is filled
- *     in on 1 of 202 sites. That is an unconfigured spreadsheet, not site progress,
- *     and it would drag all 202 rows down to roughly a third of their photo figure.
- *   - the 107 sites that have never filed a daily report would score 0 on reporting,
- *     which assumes a daily report was expected. Nothing in the portal states that.
+ *   (11 + 2 + 0) / (20 + (2 + 4) + 4) = 13/30 = 43%
  *
- * So the blend answers "how far along is this site on what is actually tracked",
- * and the caption stops the reader from mistaking a one-column figure for a
- * three-column one. On the 90 sites where photos are the only measured column,
- * OVERALL still equals PHOTOS -- and now says "photos only" so it is not a puzzle.
+ * This is the same "pool, never average percentages" rule the route KPI already
+ * follows, so a site's OVERALL cannot be swung by its smallest column.
+ *
+ * WHAT EACH COLUMN CONTRIBUTES
+ *
+ *   PHOTOS        fieldsSettled / fieldsAll -- the PHOTOS cell's own two numbers.
+ *   DAILY REPORTS reportDays / (reportDays + missedDays) -- days carrying a report
+ *                 over the working days in the observed window. A site that has
+ *                 never reported has NO window, so it adds 0 to both sides and
+ *                 cannot be scored against a reporting target nobody has stated.
+ *   MILESTONES    done / 4, counted the way the MILESTONES caption counts it: the
+ *                 blocks at 100% over all four blocks.
+ *
+ * ON MILESTONES BEING COUNTED WHILE UNCONFIGURED. The four blocks stay in the
+ * denominator even where TELAMON-ILA-TRACKER holds no task for the site -- as
+ * specified, "0/4" contributes 0 and 4. This is worth knowing when reading the
+ * figure: with the tracker filled in on 1 of 202 sites, almost every row is carrying
+ * 4 unearned denominator, which pulls it a few points below its photo figure. The
+ * tooltip prints all three fractions so the pull is visible rather than mysterious.
  * ------------------------------------------------------------------------- */
-const OVERALL_WEIGHTS = { photos: 1, reports: 1, milestones: 1 };
-
 const OVERALL_LABELS = { photos: 'photos', reports: 'reports', milestones: 'milestones' };
 
-/** A finite percentage, or null. Guards against undefined from a stale server. */
-function pctOrNull(value) {
+/** A finite number, or null. Guards against undefined from a stale server. */
+function numOrNull(value) {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 
+/** Photo fields: settled over all, the two numbers the PHOTOS cell prints. */
+export function photoCounts(row) {
+  const done = numOrNull(row.photosUploaded);
+  const total = numOrNull(row.photosTotal);
+  if (done === null || total === null || total <= 0) return null;
+  return { done, total };
+}
+
 /**
- * Reporting as a percentage: the share of the observed window that was reported on.
+ * Reporting: days reported over the working days in the observed window.
  *
- * NULL where the site never reported. missedDays is null there -- no window exists,
- * which is not the same as a window with nothing in it.
+ * NULL where the site never reported -- missedDays is null there, meaning no window
+ * exists, which is not the same as a window with nothing in it.
  */
-export function reportsPct(row) {
-  const days = pctOrNull(row.reportDays);
-  const missed = pctOrNull(row.missedDays);
-  if (days === null || missed === null) return null;
-  const window = days + missed;
-  if (window <= 0) return null;
-  return Math.round((days / window) * 100);
-}
-
-/** Milestones as one percentage: the mean of the blocks that have a figure. */
-export function milestonesPct(row) {
-  if (!Array.isArray(row.milestones)) return null;
-  const figures = row.milestones
-    .map((m) => pctOrNull(typeof m === 'number' ? m : m && m.pct))
-    .filter((n) => n !== null);
-  if (!figures.length) return null;
-  return Math.round(figures.reduce((sum, n) => sum + n, 0) / figures.length);
+export function reportCounts(row) {
+  const done = numOrNull(row.reportDays);
+  const missed = numOrNull(row.missedDays);
+  if (done === null || missed === null) return null;
+  const total = done + missed;
+  if (total <= 0) return null;
+  return { done, total };
 }
 
 /**
- * Blend the columns that have data. Returns overallPct null when none do, so the
+ * Milestones: blocks at 100% over all blocks.
+ *
+ * Counted exactly as MilestoneCell's "0/4 milestones" caption counts it, so the two
+ * cells in the same row can never tell different stories.
+ */
+export function milestoneCounts(row) {
+  if (!Array.isArray(row.milestones) || !row.milestones.length) return null;
+  const figures = row.milestones.map((m) => numOrNull(typeof m === 'number' ? m : m && m.pct));
+  return {
+    done: figures.filter((n) => n === 100).length,
+    total: row.milestones.length,
+    // Whether the tracker actually says anything here, as opposed to four grey blocks.
+    measured: figures.some((n) => n !== null),
+  };
+}
+
+/** A column's own percentage, for the tooltip. */
+function share({ done, total }) {
+  return Math.round((done / total) * 100);
+}
+
+/**
+ * Pool the columns that have counts. Returns overallPct null when none do, so the
  * cell shows "--" instead of a confident 0.
  */
 export function overallFrom(row) {
   const parts = [
-    { key: 'photos', pct: pctOrNull(row.photosPct) },
-    { key: 'reports', pct: reportsPct(row) },
-    { key: 'milestones', pct: milestonesPct(row) },
+    { key: 'photos', counts: photoCounts(row) },
+    { key: 'reports', counts: reportCounts(row) },
+    { key: 'milestones', counts: milestoneCounts(row) },
   ]
-    .filter((part) => part.pct !== null)
-    .map((part) => ({ ...part, label: OVERALL_LABELS[part.key] }));
+    .filter((part) => part.counts !== null)
+    .map((part) => ({
+      key: part.key,
+      label: OVERALL_LABELS[part.key],
+      done: part.counts.done,
+      total: part.counts.total,
+      pct: share(part.counts),
+      measured: part.counts.measured !== false,
+    }));
 
   if (!parts.length) return { overallPct: null, overallParts: [] };
 
-  const weight = parts.reduce((sum, part) => sum + OVERALL_WEIGHTS[part.key], 0);
-  const total = parts.reduce((sum, part) => sum + part.pct * OVERALL_WEIGHTS[part.key], 0);
-  return { overallPct: Math.round(total / weight), overallParts: parts };
+  /*
+   * "--", not 0%, when NOTHING is measured.
+   *
+   * The four milestone blocks are always in the denominator, so a site with no photo
+   * fields, no reports and no tracker tasks would otherwise pool to 0/4 and print a
+   * confident 0% -- reporting no progress on a site nobody has measured. A grey
+   * milestone column contributes its denominator, but it cannot be the sole basis for
+   * a figure.
+   */
+  if (!parts.some((part) => part.measured)) return { overallPct: null, overallParts: [] };
+
+  const done = parts.reduce((sum, part) => sum + part.done, 0);
+  const total = parts.reduce((sum, part) => sum + part.total, 0);
+  if (total <= 0) return { overallPct: null, overallParts: [] };
+
+  return {
+    overallPct: Math.round((done / total) * 100),
+    overallParts: parts,
+    overallDone: done,
+    overallTotal: total,
+  };
 }
 
 export function mapNodeStatus(raw) {

@@ -420,27 +420,28 @@ export function MilestoneCell({ milestones, colorFor }) {
 }
 
 /**
- * OVERALL: the blend of PHOTOS, DAILY REPORTS and MILESTONES.
+ * OVERALL: the three metric columns pooled into one ratio.
  *
- * The columns that went in are named IN THE TOOLTIP, not in a caption under the
- * figure. The caption was a third line of small print in a row that already has two,
- * and on most rows it repeated what the neighbouring cells already show.
+ * The tooltip prints the arithmetic in full -- every fraction, then the pooled total --
+ * because that is the only way a reader can see WHY the figure sits where it does. It
+ * replaced a caption under the number, which was a third line of small print in a row
+ * that already has two.
  */
-export function OverallCell({ pct, color, parts = [] }) {
+export function OverallCell({ pct, color, parts = [], done, total }) {
   if (pct === null || pct === undefined) {
     return <NoDataCell hint="No photo, report or milestone figures for this site" />;
   }
 
   const named = parts.filter((p) => p && p.label);
-  const figures = named.map((p) => `${p.label} ${p.pct}%`).join(', ');
   const missing = 3 - named.length;
   const tip = !named.length
     ? undefined
-    : missing === 0
-      ? `${pct}% = the mean of ${figures}. All three columns are measured for this site.`
-      : `${pct}% = ${named.length === 1 ? figures : `the mean of ${figures}`}. The other ` +
-        `${missing === 1 ? 'column has' : `${missing} columns have`} no data for this site, so ` +
-        `${missing === 1 ? 'it is' : 'they are'} left out rather than counted as zero.`;
+    : `${pct}% = ${done}/${total} -- ` +
+      named.map((p) => `${p.label} ${p.done}/${p.total}`).join(' + ') +
+      (missing === 0
+        ? '. All three columns are counted for this site.'
+        : `. The other ${missing === 1 ? 'column has' : `${missing} columns have`} no counts ` +
+          `for this site, so ${missing === 1 ? 'it adds' : 'they add'} nothing to either side.`);
 
   return (
     <div className="mon-overall" title={tip}>

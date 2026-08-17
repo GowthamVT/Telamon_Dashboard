@@ -292,6 +292,8 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
               <OverallCell
                 pct={site.overallPct}
                 parts={site.overallParts}
+                done={site.overallDone}
+                total={site.overallTotal}
                 color={statusColor(site.status)}
               />
               <div>
