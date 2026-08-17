@@ -32,7 +32,7 @@ export function decorateSite(site) {
   const status = deriveStatus(site);
 
   if (status === STATUS.YET_TO_START) {
-    return {
+    const row = {
       ...site,
       status,
       startKind: site.startKind || 'start',
@@ -41,9 +41,10 @@ export function decorateSite(site) {
       reports: 0,
       milestones: [0, 0, 0, 0],
     };
+    return { ...row, ...overallFrom(row) };
   }
 
-  return {
+  const row = {
     ...site,
     status,
     /* The sample rows carry a plain start date, so they say so -- the live path sets
@@ -52,6 +53,7 @@ export function decorateSite(site) {
     photosPct: percent(site.photosUploaded, site.photosTotal),
     milestones: [site.m1, site.m2, site.m3, site.m4],
   };
+  return { ...row, ...overallFrom(row) };
 }
 
 /** Route-level rollup used by the hero figure and the stat cards. */
@@ -125,6 +127,90 @@ export function monthsSince(iso, today = new Date()) {
   return `${Math.max(months, 0)}mo`;
 }
 
+/* ---------------------------------------------------------------------------
+ * OVERALL = the three metric columns blended.
+ *
+ * It used to be `photosPct` verbatim, so OVERALL and PHOTOS printed the same
+ * number on every row and the column carried no information of its own.
+ *
+ * Each column is turned into a percentage and they are averaged with EQUAL WEIGHT:
+ *
+ *   PHOTOS        coveragePct -- settled photo fields over all photo fields
+ *   DAILY REPORTS reportDays / (reportDays + missedDays), the share of working
+ *                 days in the observed reporting window that carry a report.
+ *                 This is the arithmetic the old MISSED REPORT DAYS card used.
+ *   MILESTONES    the mean of the tracker milestones that have a figure
+ *
+ * A COLUMN WITH NO DATA IS LEFT OUT rather than counted as zero, and the cell
+ * says which columns went in. Scoring an absent column as 0 would mean:
+ *
+ *   - every site loses a third of its score because TELAMON-ILA-TRACKER is filled
+ *     in on 1 of 202 sites. That is an unconfigured spreadsheet, not site progress,
+ *     and it would drag all 202 rows down to roughly a third of their photo figure.
+ *   - the 107 sites that have never filed a daily report would score 0 on reporting,
+ *     which assumes a daily report was expected. Nothing in the portal states that.
+ *
+ * So the blend answers "how far along is this site on what is actually tracked",
+ * and the caption stops the reader from mistaking a one-column figure for a
+ * three-column one. On the 90 sites where photos are the only measured column,
+ * OVERALL still equals PHOTOS -- and now says "photos only" so it is not a puzzle.
+ * ------------------------------------------------------------------------- */
+const OVERALL_WEIGHTS = { photos: 1, reports: 1, milestones: 1 };
+
+const OVERALL_LABELS = { photos: 'photos', reports: 'reports', milestones: 'milestones' };
+
+/** A finite percentage, or null. Guards against undefined from a stale server. */
+function pctOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Reporting as a percentage: the share of the observed window that was reported on.
+ *
+ * NULL where the site never reported. missedDays is null there -- no window exists,
+ * which is not the same as a window with nothing in it.
+ */
+export function reportsPct(row) {
+  const days = pctOrNull(row.reportDays);
+  const missed = pctOrNull(row.missedDays);
+  if (days === null || missed === null) return null;
+  const window = days + missed;
+  if (window <= 0) return null;
+  return Math.round((days / window) * 100);
+}
+
+/** Milestones as one percentage: the mean of the blocks that have a figure. */
+export function milestonesPct(row) {
+  if (!Array.isArray(row.milestones)) return null;
+  const figures = row.milestones
+    .map((m) => pctOrNull(typeof m === 'number' ? m : m && m.pct))
+    .filter((n) => n !== null);
+  if (!figures.length) return null;
+  return Math.round(figures.reduce((sum, n) => sum + n, 0) / figures.length);
+}
+
+/**
+ * Blend the columns that have data. Returns overallPct null when none do, so the
+ * cell shows "--" instead of a confident 0.
+ */
+export function overallFrom(row) {
+  const parts = [
+    { key: 'photos', pct: pctOrNull(row.photosPct) },
+    { key: 'reports', pct: reportsPct(row) },
+    { key: 'milestones', pct: milestonesPct(row) },
+  ]
+    .filter((part) => part.pct !== null)
+    .map((part) => ({ ...part, label: OVERALL_LABELS[part.key] }));
+
+  if (!parts.length) return { overallPct: null, overallParts: [] };
+
+  const weight = parts.reduce((sum, part) => sum + OVERALL_WEIGHTS[part.key], 0);
+  const total = parts.reduce((sum, part) => sum + part.pct * OVERALL_WEIGHTS[part.key], 0);
+  return { overallPct: Math.round(total / weight), overallParts: parts };
+}
+
 export function mapNodeStatus(raw) {
   if (!raw) return STATUS.YET_TO_START;
   return NODE_STATUS_MAP[String(raw).trim().toLowerCase()] || STATUS.IN_PROGRESS;
@@ -142,7 +228,7 @@ export function mapNodeStatus(raw) {
 export function rowsFromNodes(nodes = []) {
   return nodes.map((node) => {
     const m = node.metrics || null;
-    return {
+    const row = {
       nodeId: node.nodeId,
       name: node.nodeName,
       status: mapNodeStatus(node.workStatus),
@@ -223,13 +309,16 @@ export function rowsFromNodes(nodes = []) {
       // NULL where the node never reported -- no window, so nothing to measure.
       missedDays: m ? m.missedDays : null,
     };
+
+    // OVERALL blends the three columns above; it needs the finished row to read them.
+    return { ...row, ...overallFrom(row) };
   });
 }
 
 export const SORTS = {
   // `?? -1` keeps NULL metrics from sorting as 0 and appearing "best".
   'Site name': (a, b) => a.name.localeCompare(b.name),
-  Overall: (a, b) => (b.photosPct ?? -1) - (a.photosPct ?? -1),
+  Overall: (a, b) => (b.overallPct ?? -1) - (a.overallPct ?? -1),
   'Start date': (a, b) => String(a.start).localeCompare(String(b.start)),
 };
 

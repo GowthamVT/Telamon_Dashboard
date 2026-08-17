@@ -289,7 +289,11 @@ export default function RouteCompletionMonitor({ data = loadRouteMonitor(), live
                 milestones={site.milestones}
                 colorFor={milestoneColor}
               />
-              <OverallCell pct={site.photosPct} color={statusColor(site.status)} />
+              <OverallCell
+                pct={site.overallPct}
+                parts={site.overallParts}
+                color={statusColor(site.status)}
+              />
               <div>
                 <StatusPill status={site.status} />
               </div>

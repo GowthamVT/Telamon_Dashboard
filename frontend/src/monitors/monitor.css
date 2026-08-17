@@ -957,8 +957,21 @@
 
 .mon-overall {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mon-overall-row {
+  display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* Matches .mon-miles-sub, so the two captions in the same row read as a pair. */
+.mon-overall-sub {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--mon-dim);
 }
 
 .mon-overall-pct {

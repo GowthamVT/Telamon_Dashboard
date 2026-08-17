@@ -417,14 +417,47 @@ export function MilestoneCell({ milestones, colorFor }) {
   );
 }
 
-export function OverallCell({ pct, color }) {
-  if (pct === null || pct === undefined) return <NoDataCell hint="Derived from photo counts" />;
+/**
+ * OVERALL: the blend of PHOTOS, DAILY REPORTS and MILESTONES.
+ *
+ * The caption names the columns that went in. Without it a reader cannot tell a
+ * three-column figure from a one-column one, and on most Telamon sites only photos
+ * are measured -- so the number would look like a duplicate of the PHOTOS cell
+ * with no way to know why.
+ */
+export function OverallCell({ pct, color, parts = [] }) {
+  if (pct === null || pct === undefined) {
+    return <NoDataCell hint="No photo, report or milestone figures for this site" />;
+  }
+
+  const named = parts.filter((p) => p && p.label);
+  const figures = named.map((p) => `${p.label} ${p.pct}%`).join(', ');
+  const missing = 3 - named.length;
+  const tip = !named.length
+    ? undefined
+    : missing === 0
+      ? `${pct}% = the mean of ${figures}. All three columns are measured for this site.`
+      : `${pct}% = ${named.length === 1 ? figures : `the mean of ${figures}`}. The other ` +
+        `${missing === 1 ? 'column has' : `${missing} columns have`} no data for this site, so ` +
+        `${missing === 1 ? 'it is' : 'they are'} left out rather than counted as zero.`;
+
   return (
     <div className="mon-overall">
-      <SparkBars pct={pct} color={color} heights={[6, 10, 14, 9]} small />
-      <span className="mon-overall-pct" style={{ color }}>
-        {pct}%
-      </span>
+      <div className="mon-overall-row">
+        <SparkBars pct={pct} color={color} heights={[6, 10, 14, 9]} small />
+        <span className="mon-overall-pct" style={{ color }}>
+          {pct}%
+        </span>
+      </div>
+      {named.length ? (
+        <p className="mon-overall-sub" title={tip}>
+          {named.length === 3
+            ? 'all 3 columns'
+            : named.length === 1
+              ? `${named[0].label} only`
+              : named.map((p) => p.label).join(' + ')}
+        </p>
+      ) : null}
     </div>
   );
 }
