@@ -40,6 +40,13 @@ const TRACKER_FIELDS = [
   'Conditional Approved Date',
   'Final Complete Date',
   'Lumen Accept/Reject',
+  /*
+   * ADDED LATER BY THE CLIENT, and now the primary signal. A Dropdown whose
+   * options are "Inprogress", "Completed", "Yet to start". Stored as an option
+   * KEY (a GUID), so the value is translated back to its label before it gets
+   * here -- see optionLabel() in monitorService.getNodeTracker.
+   */
+  'Status',
   'Notes',
 ];
 
@@ -137,7 +144,38 @@ function looksLikeDate(value) {
   return !Number.isNaN(new Date(v.replace(/\./g, '/')).getTime());
 }
 
+/**
+ * The crew's own Status dropdown -> a task state.
+ *
+ * "Inprogress" is the portal's spelling, one word; "Yet to start" is theirs too.
+ * Matched loosely so "In Progress" and "Not started" also land correctly, and
+ * anything unrecognised returns null so the sign-off chain still decides.
+ */
+function crewStatusFromValue(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return null;
+  if (v.startsWith('complet')) return 'complete';
+  if (v.startsWith('reject')) return 'rejected';
+  if (v.replace(/[\s_-]/g, '').startsWith('inprogress')) return 'inProgress';
+  if (v.startsWith('yet to start') || v.startsWith('not start') || v.startsWith('notstart')) {
+    return 'notStarted';
+  }
+  return null;
+}
+
 function trackerTaskStatus(task) {
+  /*
+   * THE STATUS COLUMN WINS when it is set.
+   *
+   * It is a person stating where the task stands, which beats anything inferred
+   * from the date columns -- and on this data those columns cannot be trusted
+   * anyway: every non-empty value in them is a column-owner label ("Partner",
+   * "Lumen"), never a date. Where Status is empty, the sign-off chain below is
+   * unchanged, so nodes without the column behave exactly as before.
+   */
+  const crew = crewStatusFromValue(task.crewStatus);
+  if (crew) return { status: crew, reason: `Status: ${String(task.crewStatus).trim()}` };
+
   const accept = String(task.lumenAcceptReject || '').trim().toLowerCase();
   if (accept.startsWith('reject')) return { status: 'rejected', reason: 'Lumen rejected' };
   if (accept.startsWith('accept') || accept === 'yes' || accept === 'approved') {
@@ -193,6 +231,7 @@ module.exports = {
   milestoneFromValue,
   milestoneFromTaskId,
   milestoneForTask,
+  crewStatusFromValue,
   trackerTaskStatus,
   isSectionHeader,
 };

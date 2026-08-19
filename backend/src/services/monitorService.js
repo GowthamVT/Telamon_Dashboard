@@ -1315,7 +1315,19 @@ async function getNodeTracker(scope = {}) {
               $map: {
                 input: { $ifNull: ['$list', []] },
                 as: 'f',
-                in: { id: '$$f.id', label: '$$f.label' },
+                in: {
+                  id: '$$f.id',
+                  label: '$$f.label',
+                  /* Dropdown answers are stored as the option KEY, so the keys
+                     have to come along to be translated back to labels. */
+                  options: {
+                    $map: {
+                      input: { $ifNull: ['$$f.dropDownOptions', []] },
+                      as: 'o',
+                      in: { key: '$$o.key', label: { $ifNull: ['$$o.label', '$$o.value'] } },
+                    },
+                  },
+                },
               },
             },
           },
@@ -1326,15 +1338,35 @@ async function getNodeTracker(scope = {}) {
     if (!forms.length) return { byNode: {}, elapsedMs: Date.now() - started };
 
     const labelByFormField = new Map();
+    const optionsByFormField = new Map();
     const formIds = [];
     const nodeByForm = new Map();
     for (const f of forms) {
       formIds.push(f.formId);
       nodeByForm.set(f.formId, f.nodeId);
       for (const fld of f.fields || []) {
-        if (fld && fld.id) labelByFormField.set(f.formId + '::' + fld.id, fld.label);
+        if (!fld || !fld.id) continue;
+        labelByFormField.set(f.formId + '::' + fld.id, fld.label);
+        if (Array.isArray(fld.options) && fld.options.length) {
+          const byKey = new Map();
+          for (const o of fld.options) if (o && o.key) byKey.set(String(o.key), o.label);
+          if (byKey.size) optionsByFormField.set(f.formId + '::' + fld.id, byKey);
+        }
       }
     }
+
+    /*
+     * A dropdown answer arrives as the option key, not the text: the Status column
+     * reads "BB9E24A8-A816-4D20-A810-CC4CED83275B", whose label is "Completed".
+     * The keys are per-form GUIDs, so they are resolved from the form's own option
+     * list rather than hard-coded -- a different environment has different GUIDs
+     * for the same three words.
+     */
+    const optionLabel = (formId, questionId, raw) => {
+      const opts = optionsByFormField.get(formId + '::' + questionId);
+      if (!opts) return raw;
+      return opts.get(String(raw)) || raw;
+    };
 
     /* ---- 2. the submitted values ----
      * questionId joins to the LIST element id, NOT its _id: verified on the
@@ -1359,6 +1391,7 @@ async function getNodeTracker(scope = {}) {
       'Conditional Approved Date': 'conditionalApprovedDate',
       'Final Complete Date': 'finalCompleteDate',
       'Lumen Accept/Reject': 'lumenAcceptReject',
+      Status: 'crewStatus',
       Notes: 'notes',
     };
 
@@ -1372,7 +1405,7 @@ async function getNodeTracker(scope = {}) {
         bySet.set(v.answerSetId, { answerSetId: v.answerSetId, formId: v.formId, updatedAt: null });
       }
       const row = bySet.get(v.answerSetId);
-      row[key] = String(v.value);
+      row[key] = optionLabel(v.formId, v.questionId, String(v.value));
       const at = v.createdAt ? new Date(v.createdAt).toISOString().slice(0, 10) : null;
       if (at && (!row.updatedAt || at > row.updatedAt)) row.updatedAt = at;
     }
@@ -1398,6 +1431,8 @@ async function getNodeTracker(scope = {}) {
         conditionalApprovedDate: row.conditionalApprovedDate || null,
         finalCompleteDate: row.finalCompleteDate || null,
         lumenAcceptReject: row.lumenAcceptReject || null,
+        /** The crew's own Status dropdown, already resolved to its label. */
+        crewStatus: row.crewStatus || null,
         notes: row.notes || null,
         status: verdict.status,
         statusReason: verdict.reason,
